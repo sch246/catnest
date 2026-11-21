@@ -35,7 +35,7 @@
 ```sh
 git clone https://github.com/sch246/catnest.git && cd catnest
 python3 ./catnest.py status          # 查看猫窝本体状态
-python3 ./catnest.py check --mutate  # 跑 5 条自检猫须探针 + 变异防假穿透测试
+python3 ./catnest.py check --mutate  # 跑 4 条自检猫须探针 + 变异防假穿透测试
 python3 ./catnest.py assemble orange # 按“橘猫”配方组装全局前台最小上下文
 
 # 可选：软链安装为 Agent 全局 Skill（Claude Code / Codex / Antigravity 等通用）

@@ -17,13 +17,6 @@ from .trace import analyze_transcript, write_trace_report
 
 LAST_TOUCHED_RE = re.compile(r"^last_touched:\s*(\d{4}-\d{2}-\d{2})", re.M)
 ENGINE_ROOT = Path(os.environ.get("CATNEST_HOME") or Path(__file__).resolve().parent.parent).expanduser().resolve()
-_PRIV_IP_RE = re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b")
-_LOCAL_PATH_RE = re.compile(r"(?:/root/|/home/[^\s/]+/|[A-Za-z]:[\\/])[^\s`'\"，。；)]*")
-
-
-def _sanitize_meta_text(text: str) -> str:
-    text = _PRIV_IP_RE.sub("<private-ip>", text)
-    return _LOCAL_PATH_RE.sub("<local-path>", text)
 
 
 def cmd_friction(root: Path, args: argparse.Namespace) -> int:
@@ -35,11 +28,9 @@ def cmd_friction(root: Path, args: argparse.Namespace) -> int:
     if not log_file.exists():
         log_file.write_text(f"# {now.strftime('%Y-%m')} · 运行摩擦与负经验回流\n\n", encoding="utf-8")
 
-    summary = _sanitize_meta_text(args.summary) if args.meta else args.summary
-    ctx_val = _sanitize_meta_text(args.context) if (args.meta and args.context) else args.context
     atom_part = f" | atom: `{args.atom}`" if args.atom else ""
-    ctx_part = f" | ctx: {ctx_val}" if ctx_val else ""
-    entry = f"- `{now.strftime('%Y-%m-%d %H:%M')}` **[{args.kind}]** {summary}{atom_part}{ctx_part}\n"
+    ctx_part = f" | ctx: {args.context}" if args.context else ""
+    entry = f"- `{now.strftime('%Y-%m-%d %H:%M')}` **[{args.kind}]** {args.summary}{atom_part}{ctx_part}\n"
     with log_file.open("a", encoding="utf-8") as f:
         f.write(entry)
 
