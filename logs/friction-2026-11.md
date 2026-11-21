@@ -6,3 +6,4 @@
 - `2026-11-20 17:26` **[false-alarm]** Opus盲审#3：field过期扫全仓造误报风暴，open超21天报FAIL把沉水变闸门 | atom: `D2` | ctx: Opus blind review #11
 - `2026-11-20 17:26` **[other]** Opus盲审#4：maintenance.py的pool[:max(sample*2,len)]写反min/max导致加权盲抽失效 | atom: `T4` | ctx: Opus blind review #11
 - `2026-11-20 17:39` **[drift]** 零上下文盲读暴露缺少 README 运作总图与外部接入/语法说明，且 open/01 残留旧名 flow | atom: `D4` | ctx: Zero-context blind reader test
+- `2026-11-21 11:19` **[bloat]** 原trace.py不扫子代理树与耗时/重跑命令，且boot一刀切全量单测+盲审违背rising-sea并暗箱捆绑附加步骤(185子代理/57个>10m/127次build) | atom: `T2`

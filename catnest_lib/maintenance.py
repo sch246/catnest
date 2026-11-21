@@ -17,6 +17,13 @@ from .trace import analyze_transcript, write_trace_report
 
 LAST_TOUCHED_RE = re.compile(r"^last_touched:\s*(\d{4}-\d{2}-\d{2})", re.M)
 ENGINE_ROOT = Path(os.environ.get("CATNEST_HOME") or Path(__file__).resolve().parent.parent).expanduser().resolve()
+_PRIV_IP_RE = re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b")
+_LOCAL_PATH_RE = re.compile(r"(?:/root/|/home/[^\s/]+/|[A-Za-z]:[\\/])[^\s`'\"，。；)]*")
+
+
+def _sanitize_meta_text(text: str) -> str:
+    text = _PRIV_IP_RE.sub("<private-ip>", text)
+    return _LOCAL_PATH_RE.sub("<local-path>", text)
 
 
 def cmd_friction(root: Path, args: argparse.Namespace) -> int:
@@ -28,9 +35,11 @@ def cmd_friction(root: Path, args: argparse.Namespace) -> int:
     if not log_file.exists():
         log_file.write_text(f"# {now.strftime('%Y-%m')} · 运行摩擦与负经验回流\n\n", encoding="utf-8")
 
+    summary = _sanitize_meta_text(args.summary) if args.meta else args.summary
+    ctx_val = _sanitize_meta_text(args.context) if (args.meta and args.context) else args.context
     atom_part = f" | atom: `{args.atom}`" if args.atom else ""
-    ctx_part = f" | ctx: {args.context}" if args.context else ""
-    entry = f"- `{now.strftime('%Y-%m-%d %H:%M')}` **[{args.kind}]** {args.summary}{atom_part}{ctx_part}\n"
+    ctx_part = f" | ctx: {ctx_val}" if ctx_val else ""
+    entry = f"- `{now.strftime('%Y-%m-%d %H:%M')}` **[{args.kind}]** {summary}{atom_part}{ctx_part}\n"
     with log_file.open("a", encoding="utf-8") as f:
         f.write(entry)
 
@@ -169,8 +178,9 @@ def cmd_settle(root: Path, args: argparse.Namespace) -> int:
             out = write_trace_report(root, sig)
             print(
                 f"  - 会话指针已生成 -> {out.relative_to(root)} "
-                f"(重复读={len(sig['repeated_reads'])}, 错误={len(sig['errors'])}, "
-                f"大输出={len(sig['oversized'])}, 纠偏词={len(sig['corrections'])})"
+                f"(子代理={sig.get('subagent_count', 0)}, 慢子代理={len(sig.get('slow_subagents', []))}, "
+                f"重跑轰炸={len(sig.get('heavy_cmd_churn', []))}, 重复读={len(sig['repeated_reads'])}, "
+                f"错误={len(sig['errors'])}, 大输出={len(sig['oversized'])}, 纠偏词={len(sig['corrections'])})"
             )
 
     # 4. Weighted blind-check sample (fact atoms without executable probes & lowest ACT-R first)

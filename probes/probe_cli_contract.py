@@ -76,12 +76,39 @@ def main() -> int:
         suspect2 = (sandbox / "_state" / "suspect.md").read_text("utf-8")
         assert "## EXPIRED" in suspect2 and "field:car@2020-01-01" in suspect2, f"missed scoped EXPIRED: {suspect2}"
 
-        # 4. assemble auto-attaches suspect; friction + purr alias sink stale open
+        # 4. assemble auto-attaches suspect; friction + purr alias sink stale open + recursive subagent/churn trace
         r = run([*cli, "--root", str(sandbox), "assemble", "orange", "--json"])
         assert r.returncode == 0 and json.loads(r.stdout)["suspect_attached"] is True
         assert run([*cli, "--root", str(sandbox), "friction", "测试摩擦", "--kind", "miss", "--open"]).returncode == 0
-        r = run([*cli, "--root", str(sandbox), "purr", "--days", "0", "--apply"])
+
+        brain_dir = Path(td) / "brain"
+        parent_log = brain_dir / "11111111-1111-1111-1111-111111111111" / ".system_generated" / "logs" / "transcript.jsonl"
+        child_id = "22222222-2222-2222-2222-222222222222"
+        child_log = brain_dir / child_id / ".system_generated" / "logs" / "transcript.jsonl"
+        parent_log.parent.mkdir(parents=True)
+        child_log.parent.mkdir(parents=True)
+        parent_log.write_text(
+            json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "created_at": "2026-11-21T01:00:00Z",
+                        "tool_calls": [{"name": "invoke_subagent", "arguments": {"Role": "Heavy Runner"}}]}) + "\n"
+            + json.dumps({"step_index": 2, "type": "GENERIC", "created_at": "2026-11-21T01:00:02Z",
+                          "content": f'{{"conversationId": "{child_id}", "logAbsoluteUri": "file://{child_log}"}}'}) + "\n",
+            encoding="utf-8",
+        )
+        child_log.write_text(
+            "\n".join([
+                json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "created_at": "2026-11-21T01:00:05Z",
+                            "tool_calls": [{"name": "run_command", "arguments": {"CommandLine": "mvn test"}}]}),
+                json.dumps({"step_index": 2, "type": "PLANNER_RESPONSE", "created_at": "2026-11-21T01:06:00Z",
+                            "tool_calls": [{"name": "run_command", "arguments": {"CommandLine": "mvn test"}}]}),
+                json.dumps({"step_index": 3, "type": "PLANNER_RESPONSE", "created_at": "2026-11-21T01:15:30Z",
+                            "tool_calls": [{"name": "run_command", "arguments": {"CommandLine": "mvn test"}}]}),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        r = run([*cli, "--root", str(sandbox), "purr", "--days", "0", "--transcript", str(parent_log), "--apply"])
         assert r.returncode == 0 and not list((sandbox / "open").glob("*.md"))
+        trace_md = (sandbox / "_state" / "trace_signals.md").read_text("utf-8")
+        assert "Heavy Runner" in trace_md and "full_mvn_test" in trace_md, f"missed subagent/churn trace: {trace_md}"
 
     # 5. Anti-drift: README.md documented commands must match `catnest.py --help` & no stale `flow ` CLI residue
     help_txt = run([*cli, "--help"]).stdout
