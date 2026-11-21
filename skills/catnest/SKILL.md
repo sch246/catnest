@@ -12,8 +12,11 @@ description: 猫窝（catnest）自维护人机研发工作流。面向想法与
 ## 日常核心动作
 
 ```sh
-# 1. 开机按猫配方装最小上下文（有告警自动附带 _state/suspect.md）
+# 1. 开机按猫配方直出最小上下文与角色契约卡（默认 --role main 直出正文，零 read_file 启动）
 python3 <CATNEST_HOME>/catnest.py --root <窝> assemble <猫名>
+# 派副手或窄触手时可提取对应 6 行角色卡贴入子代理 brief：
+python3 <CATNEST_HOME>/catnest.py --root <窝> assemble --role deputy
+python3 <CATNEST_HOME>/catnest.py --root <窝> assemble --role tentacle
 
 # 2. 新想法/修正进来先碰撞旧意图、open/ 与沉水 logs/（检索不自动算采纳，真正 touch/assemble 才计采纳）
 python3 <CATNEST_HOME>/catnest.py --root <窝> recall "<想法或关键词>"
@@ -30,5 +33,5 @@ python3 <CATNEST_HOME>/catnest.py --root <窝> friction "<现象>" --kind miss|f
 
 ## 两条硬纪律
 
-1. **重 I/O 必隔离，探针代码用完必扔**：翻大量源码、构建跑测、抓图派一次性触手叼回负经验河岸与“意外栏”；拿不准时在隔离 worktree 写探针代码跑实测后直接扔掉，河岸围出显然解法再浇河床代码。
+1. **三档分流与分批短写（详见 `assemble` 注入的 `templates/roles.md`）**：已知路径且 `≤3` 文本文件主控自读自改；`1~2` 问未知/重负载直派窄触手（1 触手 1 问，主控硬禁直读图片/二进制/原始 dump）；`≥3` 问或跨仓调查派 `1` 副手递归扇出并分节短写（`≤100` 行/次，草稿入 `_state/dig/`、实证入 `logs/`）；主控派完无事立即结束回合等唤醒。探针代码用完必扔，河岸围出显然解法再浇河床代码。
 2. **自演进走人工授权复盘（`retro`）**：优化工作流或仓库环境时，结合 `purr --transcript` 产出的 `_state/trace_signals.md` 指针回原会话取证——优先物化成结构并撤出条文，单次失误绝不写成永久规则，严禁自动自改循环。

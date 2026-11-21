@@ -70,11 +70,11 @@ python3 ./catnest.py --root /path/to/my-nest check --install-hook /path/to/code-
 |---|---|
 | `init [dir] [--name N]` | 初始化新猫窝目录与默认 `boot.md` |
 | `status` | 查看原子、探针、悬案、日志数量与 `suspect.md` 状态 |
-| `assemble [猫名] [--list\|--print\|--json]` | 按 `boot.md` 配方输出最小文件集（自动计入所含原子采纳）；有 `## FAIL`/`## EXPIRED` 时挂载 `suspect.md` |
+| `assemble [猫名] [--role main\|deputy\|tentacle] [--files-only\|--print\|--json]` | 按 `boot.md` 配方直出角色行动卡与最小上下文正文（超 `--max-lines` 自动降级）；有 `## FAIL`/`## EXPIRED` 时挂载 `suspect.md` |
 | `recall "<查询>" [--top 6] [--no-logs]` | 中文二元组 BM25 + 别名 3× + ACT-R 召回（检索本身不刷活跃度，后续 15 分钟内 `touch`/`assemble` 才计真实采纳） |
 | `touch <ID或open/名>` | 显式标记采纳并刷新 ACT-R 活跃度（同时更新 `open/` 的 `last_touched`） |
 | `check [--all\|--mutate\|--diff REF] [--repo PATH] [--install-hook REPO]` | 机器反射刷新 `_state/suspect.md`；`--mutate` 执行变异检验防假穿透；`--install-hook` 安装非阻塞 `post-commit` |
-| `friction "<现象>" [--kind miss\|false-alarm\|bloat\|drift\|other] [--atom ID] [--open] [--meta]` | 记录主动摩擦；`--open` 升格进 `open/`；`--meta` 跨项目直写回 `$CATNEST_HOME` |
+| `friction "<现象>" [--kind miss\|false-alarm\|bloat\|drift\|other] [--atom ID] [--open] [--meta]` | 记录主动摩擦；`--open` 升格进 `open/`；跨项目 `--meta` 隔离暂存至 `$CATNEST_HOME/_state/meta-inbox.md` 防污染公开仓 |
 | `purr` / `settle [--days 14] [--repo PATH] [--transcript JSONL] [--apply]` | 沉水超期 `open/`，汇总换词连查/未采纳、Git 回退与会话指针（写 `_state/trace_signals.md`，不抄原文）供显式 `retro` 复盘 |
 
 ## License

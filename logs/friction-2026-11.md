@@ -7,3 +7,4 @@
 - `2026-11-20 17:26` **[other]** Opus盲审#4：maintenance.py的pool[:max(sample*2,len)]写反min/max导致加权盲抽失效 | atom: `T4` | ctx: Opus blind review #11
 - `2026-11-20 17:39` **[drift]** 零上下文盲读暴露缺少 README 运作总图与外部接入/语法说明，且 open/01 残留旧名 flow | atom: `D4` | ctx: Zero-context blind reader test
 - `2026-11-21 11:19` **[bloat]** 原trace.py不扫子代理树与耗时/重跑命令，且boot一刀切全量单测+盲审违背rising-sea并暗箱捆绑附加步骤(185子代理/57个>10m/127次build) | atom: `T2`
+- `2026-11-21 12:19` **[bloat]** 开机 `assemble` 只吐路径诱发连续 `read_file` 滑坡，主控等子代理期间直读 13 张图片与原始数据文件爆窗，单子代理吞 70+ 文件末尾长输出触发 `stream was interrupted` 死循环，且跨项目 `friction --meta` 缺 `_state/meta-inbox.md` 暂存隔离 | atom: `R3`

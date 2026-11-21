@@ -16,20 +16,39 @@ from . import actr_score, load_uses, parse_canon_atoms, state_dir, touch_key
 from .trace import analyze_transcript, write_trace_report
 
 LAST_TOUCHED_RE = re.compile(r"^last_touched:\s*(\d{4}-\d{2}-\d{2})", re.M)
-ENGINE_ROOT = Path(os.environ.get("CATNEST_HOME") or Path(__file__).resolve().parent.parent).expanduser().resolve()
+
+
+def _engine_root() -> Path:
+    return Path(os.environ.get("CATNEST_HOME") or Path(__file__).resolve().parent.parent).expanduser().resolve()
 
 
 def cmd_friction(root: Path, args: argparse.Namespace) -> int:
-    target = ENGINE_ROOT if args.meta else root
+    engine_root = _engine_root()
+    root_resolved = root.resolve()
+    now = datetime.now()
+    atom_part = f" | atom: `{args.atom}`" if args.atom else ""
+    ctx_part = f" | ctx: {args.context}" if args.context else ""
+
+    if args.meta and root_resolved != engine_root:
+        inbox = state_dir(engine_root) / "meta-inbox.md"
+        if not inbox.exists():
+            inbox.write_text(
+                "# _state/meta-inbox.md（跨项目工作流摩擦暂存箱，禁直接入公开库；显式 `retro` 脱敏提炼后再入 `logs/`）\n\n",
+                encoding="utf-8",
+            )
+        entry = f"- `{now.strftime('%Y-%m-%d %H:%M')}` **[{args.kind}]** (nest=`{root_resolved.name}`) {args.summary}{atom_part}{ctx_part}\n"
+        with inbox.open("a", encoding="utf-8") as f:
+            f.write(entry)
+        print(f"staged cross-project meta friction (gitignored) -> {inbox}")
+        return 0
+
+    target = engine_root if args.meta else root_resolved
     logs_dir = target / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    now = datetime.now()
     log_file = logs_dir / f"friction-{now.strftime('%Y-%m')}.md"
     if not log_file.exists():
         log_file.write_text(f"# {now.strftime('%Y-%m')} · 运行摩擦与负经验回流\n\n", encoding="utf-8")
 
-    atom_part = f" | atom: `{args.atom}`" if args.atom else ""
-    ctx_part = f" | ctx: {args.context}" if args.context else ""
     entry = f"- `{now.strftime('%Y-%m-%d %H:%M')}` **[{args.kind}]** {args.summary}{atom_part}{ctx_part}\n"
     with log_file.open("a", encoding="utf-8") as f:
         f.write(entry)
@@ -152,6 +171,11 @@ def cmd_settle(root: Path, args: argparse.Namespace) -> int:
         print(f"  - 连续换词重查（强别名信号）：`{q1}` -> `{q2}`")
     for q in dict.fromkeys(st["unadopted"][:8]):
         print(f"  - 未采纳查询：{q}")
+    meta_inbox = root / "_state" / "meta-inbox.md"
+    if meta_inbox.is_file():
+        staged = [ln for ln in meta_inbox.read_text("utf-8").splitlines() if ln.startswith("- `")]
+        if staged:
+            print(f"  - 跨项目暂存摩擦（`_state/meta-inbox.md`）：{len(staged)} 条待显式 `retro` 脱敏提炼")
 
     # 3. Low-noise git revert signals + optional transcript pointer extraction (for `retro`)
     repo = Path(getattr(args, "repo", None) or root).expanduser().resolve()
@@ -169,9 +193,10 @@ def cmd_settle(root: Path, args: argparse.Namespace) -> int:
             out = write_trace_report(root, sig)
             print(
                 f"  - 会话指针已生成 -> {out.relative_to(root)} "
-                f"(子代理={sig.get('subagent_count', 0)}, 慢子代理={len(sig.get('slow_subagents', []))}, "
-                f"重跑轰炸={len(sig.get('heavy_cmd_churn', []))}, 重复读={len(sig['repeated_reads'])}, "
-                f"错误={len(sig['errors'])}, 大输出={len(sig['oversized'])}, 纠偏词={len(sig['corrections'])})"
+                f"(子代理={sig.get('subagent_count', 0)}, 慢/过载子代理={len(sig.get('slow_subagents', []))}, "
+                f"断流死循环={len(sig.get('interrupt_loops', []))}, 主控读二进制={len(sig.get('root_binary_reads', []))}, "
+                f"等子代理偷读={sig.get('reads_while_pending', 0)}, 重跑轰炸={len(sig.get('heavy_cmd_churn', []))}, "
+                f"错误={len(sig['errors'])}, 纠偏词={len(sig['corrections'])})"
             )
 
     # 4. Weighted blind-check sample (fact atoms without executable probes & lowest ACT-R first)

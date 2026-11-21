@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
@@ -11,6 +12,22 @@ from . import ATOM_RE, touch_key
 
 RECIPE_LINE_RE = re.compile(r"^\s*-\s*`([A-Za-z0-9_-]+)`(?:\s*[（(]([^）)]*)[）)])?[：:]\s*(.+)$")
 BACKTICK_RE = re.compile(r"`([^`]+)`")
+DEFAULT_MAX_PRINT_LINES = 450
+
+
+def _engine_root() -> Path:
+    return Path(os.environ.get("CATNEST_HOME") or Path(__file__).resolve().parent.parent).expanduser().resolve()
+
+
+def load_role_card(role: str, root: Path | None = None) -> str:
+    if not role or role == "none":
+        return ""
+    cands = ([root / "templates" / "roles.md"] if root is not None else []) + [_engine_root() / "templates" / "roles.md"]
+    text = next((p.read_text("utf-8") for p in cands if p.is_file()), "")
+    if not text:
+        return ""
+    m = re.search(rf"^##\s+{re.escape(role)}\s*\n(.*?)(?=^##\s+|\Z)", text, re.M | re.S)
+    return m.group(1).strip() if m else ""
 
 
 def parse_recipes(root: Path) -> dict[str, dict]:
@@ -57,8 +74,13 @@ def resolve_recipe(root: Path, name: str) -> tuple[dict, list[Path], list[str]]:
 
 
 def cmd_assemble(root: Path, args: argparse.Namespace) -> int:
+    role = getattr(args, "role", "main") or "main"
+    role_card = load_role_card(role, root)
     recipes = parse_recipes(root)
     if args.list or not args.recipe:
+        if not args.list and role in ("deputy", "tentacle") and role_card and not args.json:
+            print(f"--- [ROLE: {role}] ---\n{role_card}")
+            return 0
         if args.json:
             print(json.dumps(recipes, ensure_ascii=False, indent=2))
             return 0
@@ -89,19 +111,30 @@ def cmd_assemble(root: Path, args: argparse.Namespace) -> int:
 
     entries = [{"path": str(f.relative_to(root)), "lines": len(f.read_text("utf-8").splitlines())} for f in out_files if f.is_file()]
     if args.json:
-        print(json.dumps({"recipe": rec["name"], "files": entries, "missing": missing, "suspect_attached": has_suspect}, ensure_ascii=False, indent=2))
+        print(json.dumps({"recipe": rec["name"], "role": role, "files": entries, "missing": missing, "suspect_attached": has_suspect}, ensure_ascii=False, indent=2))
         return 0
 
     total_lines = sum(e["lines"] for e in entries)
-    print(f"recipe: {rec['name']} ({rec['desc']}) | {len(entries)} files, {total_lines} lines")
+    print(f"recipe: {rec['name']} ({rec['desc']}) | role: {role} | {len(entries)} files, {total_lines} lines")
     for e in entries:
         print(f"  - {e['path']} ({e['lines']}L)")
     if missing:
         print(f"  ! missing patterns: {', '.join(missing)}")
-    if args.print_bundle:
-        print("\n" + "=" * 60)
-        for f in out_files:
-            if f.is_file():
-                print(f"\n--- {f.relative_to(root)} ---\n")
-                print(f.read_text("utf-8").rstrip())
+
+    files_only = getattr(args, "files_only", False)
+    force_print = getattr(args, "print_bundle", False)
+    max_lines = getattr(args, "max_lines", DEFAULT_MAX_PRINT_LINES)
+    if role_card and not files_only:
+        print(f"\n--- [ROLE: {role}] ---\n{role_card}")
+    if files_only:
+        return 0
+    if not force_print and total_lines > max_lines:
+        print(f"\n! bundle has {total_lines}L (> {max_lines}L); slim recipe or pass `--print` to force full output")
+        return 0
+
+    print("\n" + "=" * 60)
+    for f in out_files:
+        if f.is_file():
+            print(f"\n--- {f.relative_to(root)} ---\n")
+            print(f.read_text("utf-8").rstrip())
     return 0
