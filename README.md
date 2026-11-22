@@ -60,7 +60,7 @@ python3 ./catnest.py --root /path/to/my-nest check --install-hook /path/to/code-
   - **死亡条件**：什么现实变化或 `Supersedes` 会让本条失效。
   - **别名**：口语同义词1, 同义词2
   ```
-- **`open/*.md`**：活跃悬案与跨域张力（frontmatter 含 `id`, `title`, `status: active`, `last_touched: YYYY-MM-DD`, `collisions: [...]`）；解决后回写 `canon/` 并删除，超期未碰由 `purr --apply` 移入 `logs/underwater-YYYY-MM.md`。
+- **`open/*.md`**：活跃悬案与跨域张力，亦可作为活跃切片交接载体（`open/<切片>.md`，提交 SHA 等历史锚点入 `logs/`）；`last_touched: YYYY-MM-DD` 为可选 frontmatter（缺省退回文件 `mtime`）；解决后回写 `canon/` 并删除，超期未碰由 `purr --apply` 移入 `logs/underwater-YYYY-MM.md`。
 - **`probes/probe_*.py`**：猫须探针（模板见 [templates/probe-template.py](templates/probe-template.py)），顶部注释声明 `# watches:`、`# atoms:`、可选 `# mutate: relpath::old=>new` 与 `# summary:`；返回非 `0` 即写入 `_state/suspect.md`。
 - **`logs/*.md`**（只追加溯源/摩擦/沉水底库）与 **`_state/`**（机器派生视图，`.gitignore` 忽略，严禁手写）。
 
