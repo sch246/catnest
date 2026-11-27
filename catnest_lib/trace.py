@@ -83,6 +83,8 @@ def _scan_single_transcript(transcript_path: Path) -> dict:
     active_subagents: set[str] = set()
     pending_launches = 0
     reads_while_pending = 0
+    physical_line = 0
+    pending_corrections: list[dict] = []
 
     brain_root: Path | None = None
     # Typical layout: <brain>/<conv-id>/.system_generated/logs/transcript.jsonl
@@ -94,7 +96,7 @@ def _scan_single_transcript(transcript_path: Path) -> dict:
     step_count = 0
 
     with src_path.open("r", encoding="utf-8", errors="replace") as fh:
-        for raw in fh:
+        for physical_line, raw in enumerate(fh, start=1):
             if not raw.strip():
                 continue
             try:
@@ -181,9 +183,17 @@ def _scan_single_transcript(transcript_path: Path) -> dict:
                             child_paths.append((cand, role))
 
             if stype == "USER_INPUT" and isinstance(content, str):
+                for correction in pending_corrections:
+                    correction["followup_lines"] = (correction["line"] + 1, physical_line - 1)
+                pending_corrections.clear()
                 matched = [c for c in CORRECTION_CUES if c in content]
                 if matched:
-                    corrections.append({"step": idx, "cues": matched})
+                    correction = {"step": idx, "cues": matched, "line": physical_line}
+                    corrections.append(correction)
+                    pending_corrections.append(correction)
+
+    for correction in pending_corrections:
+        correction["followup_lines"] = (correction["line"] + 1, physical_line)
 
     dur_min = round((last_dt - first_dt).total_seconds() / 60.0, 1) if (first_dt and last_dt) else 0.0
     int_wasted = round((interrupt_dts[-1] - interrupt_dts[0]).total_seconds() / 60.0, 1) if len(interrupt_dts) >= 2 else 0.0
@@ -270,7 +280,7 @@ def analyze_transcript(transcript_path: Path, slow_min_threshold: float = 10.0, 
         if v >= 3
     ]
     return {
-        "transcript": str(transcript_path),
+        "transcript": str(root_info["src_path"].resolve()),
         "subagent_count": subagent_count,
         "slow_subagents": slow_subagents,
         "interrupt_loops": interrupt_loops,
@@ -339,7 +349,17 @@ def write_trace_report(root: Path, sig: dict) -> Path:
     for o in sig["oversized"][:8]:
         lines.append(f"- [大输出 >32KB] step {o['step']} ({o['type']}): {o['bytes']}B")
     for c in sig["corrections"][:12]:
-        lines.append(f"- [用户纠偏/嫌慢信号] step {c['step']}: 命中词 `{','.join(c['cues'])}`")
+        source = f"{sig['transcript']}#L{c['line']}"
+        followup_start, followup_end = c.get("followup_lines", (c["line"] + 1, c["line"]))
+        followup = (
+            f"{sig['transcript']}#L{followup_start}-L{followup_end}"
+            if followup_end >= followup_start
+            else "无后续记录"
+        )
+        lines.append(
+            f"- [用户纠偏/嫌慢信号] step {c['step']}: 命中词 `{','.join(c['cues'])}` "
+            f"| 原始记录 `{source}` | 后续记录 `{followup}`"
+        )
     out = state_dir(root) / "trace_signals.md"
     out.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return out
