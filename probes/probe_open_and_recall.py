@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# kind: ANCHORED
 # watches: catnest_lib/recall.py, catnest_lib/maintenance.py
 # atoms: D3
 # mutate: catnest_lib/recall.py::bg[0] in EDGE_CHARS and bg[1] in EDGE_CHARS=>bg[0] in EDGE_CHARS or bg[1] in EDGE_CHARS

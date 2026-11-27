@@ -4,33 +4,27 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import random
 import re
 import subprocess
-from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 
-from . import actr_score, load_uses, parse_canon_atoms, state_dir, touch_key
+from . import actr_score, engine_root, is_unclosed_tension, load_uses, parse_canon_atoms, state_dir, touch_key
 from .trace import analyze_transcript, write_trace_report
 
 LAST_TOUCHED_RE = re.compile(r"^last_touched:\s*(\d{4}-\d{2}-\d{2})", re.M)
 
 
-def _engine_root() -> Path:
-    return Path(os.environ.get("CATNEST_HOME") or Path(__file__).resolve().parent.parent).expanduser().resolve()
-
-
 def cmd_friction(root: Path, args: argparse.Namespace) -> int:
-    engine_root = _engine_root()
+    eng_root = engine_root()
     root_resolved = root.resolve()
     now = datetime.now()
     atom_part = f" | atom: `{args.atom}`" if args.atom else ""
     ctx_part = f" | ctx: {args.context}" if args.context else ""
 
-    if args.meta and root_resolved != engine_root:
-        inbox = state_dir(engine_root) / "meta-inbox.md"
+    if args.meta and root_resolved != eng_root:
+        inbox = state_dir(eng_root) / "meta-inbox.md"
         if not inbox.exists():
             inbox.write_text(
                 "# _state/meta-inbox.md（跨项目工作流摩擦暂存箱，禁直接入公开库；显式 `retro` 脱敏提炼后再入 `logs/`）\n\n",
@@ -42,7 +36,7 @@ def cmd_friction(root: Path, args: argparse.Namespace) -> int:
         print(f"staged cross-project meta friction (gitignored) -> {inbox}")
         return 0
 
-    target = engine_root if args.meta else root_resolved
+    target = eng_root if args.meta else root_resolved
     logs_dir = target / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = logs_dir / f"friction-{now.strftime('%Y-%m')}.md"
@@ -139,15 +133,23 @@ def cmd_settle(root: Path, args: argparse.Namespace) -> int:
     uses = load_uses(root)
     open_dir = root / "open"
     to_sink: list[tuple[Path, int, float]] = []
+    pinned_unclosed: list[tuple[Path, int]] = []
     if open_dir.is_dir():
         for f in sorted(open_dir.glob("*.md")):
+            text = f.read_text("utf-8")
             age = _open_age_days(f, today)
+            if age < args.days:
+                continue
+            # Time passing != debt resolved: unclosed tensions must NEVER auto-sink
+            if is_unclosed_tension(text):
+                pinned_unclosed.append((f, age))
+                continue
             actr = actr_score(uses, f"open/{f.stem}", f.stat().st_mtime)
-            if age >= args.days:
-                to_sink.append((f, age, round(actr, 2)))
+            to_sink.append((f, age, round(actr, 2)))
 
-    # 1. Sink stale open/ into logs/underwater-YYYY-MM.md (never delete)
-    print(f"## 1. 沉水候选（open/ 超过 {args.days} 天未碰）: {len(to_sink)}")
+    # 1. Sink stale open/ into logs/underwater-YYYY-MM.md (never delete; never sink unclosed tensions)
+    pin_note = f"（另有 {len(pinned_unclosed)} 条 `[未闭合]/张力` 豁免沉水）" if pinned_unclosed else ""
+    print(f"## 1. 沉水候选（open/ 超过 {args.days} 天未碰）: {len(to_sink)}{pin_note}")
     if to_sink and args.apply:
         uw = root / "logs" / f"underwater-{today.strftime('%Y-%m')}.md"
         uw.parent.mkdir(parents=True, exist_ok=True)
@@ -162,8 +164,10 @@ def cmd_settle(root: Path, args: argparse.Namespace) -> int:
     else:
         for f, age, actr in to_sink:
             print(f"  - [dry-run] open/{f.name} (age={age}d, actr={actr})")
+    for f, age in pinned_unclosed:
+        print(f"  - [pinned-unclosed] open/{f.name} (age={age}d, 未决张力禁按时间沉水)")
 
-    # 2. Passive recall signals: adoption rate, 3-min retry pairs (forced rewording), and [miss] frictions
+    # 2. Passive recall signals
     st = recall_adoption_stats(root)
     rate_str = f"{st['rate']*100:.1f}%" if st["rate"] is not None else "N/A"
     print(f"\n## 2. 被动召回信号（近 {st['total']} 次采纳率 {rate_str}，换词重查 {len(st['retries'])} 对，实录漏召回 {st['miss_frictions']} 次）")
@@ -199,13 +203,19 @@ def cmd_settle(root: Path, args: argparse.Namespace) -> int:
                 f"错误={len(sig['errors'])}, 纠偏词={len(sig['corrections'])})"
             )
 
-    # 4. Weighted blind-check sample (fact atoms without executable probes & lowest ACT-R first)
+    # 4. Weighted blind-check sample (atoms without executable probes & lowest ACT-R first)
     atoms = [a for a in parse_canon_atoms(root) if a.get("nature") != "意图"]
     rng = random.Random(args.seed)
-    pool = sorted(atoms, key=lambda a: (1 if "probes/" in a["anchor_text"] else 0, actr_score(uses, a["id"], a["mtime"])))
+    pool = sorted(
+        atoms,
+        key=lambda a: (
+            1 if "probes/" in (a["anchor_text"] + " " + a.get("evidence_text", "")) else 0,
+            actr_score(uses, a["id"], a["mtime"]),
+        ),
+    )
     front = pool[: min(max(args.sample * 2, 1), len(pool))]
     picked = rng.sample(front, min(args.sample, len(front))) if front else []
-    print(f"\n## 4. 随机盲抽复核清单（仅抽 [事实] 原子，优先无探针/久未碰，抽 {len(picked)} 条）")
+    print(f"\n## 4. 随机盲抽复核清单（优先无机器探针/久未碰，抽 {len(picked)} 条）")
     for a in picked:
-        print(f"  - [{a['id']}] {a['title']} ({a['path']})")
+        print(f"  - [{a['id']}] ({a.get('nature') or '?'}) {a['title']} ({a['path']})")
     return 0

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-# watches: catnest.py, catnest_lib/*.py, README.md, open/*.md, boot.md
-# atoms: D2, D3, R1
+# kind: ANCHORED
+# watches: catnest.py, catnest_lib/*.py, roles.json, templates/roles.md, README.md, open/*.md, boot.md
+# atoms: D2, D3, R1, R3
 # mutate: catnest_lib/assemble.py::"## FAIL" in suspect_txt=>False
-# summary: End-to-end behavioral contract probe for catnest.py (penetration, scoped expiry & README anti-drift)
+# summary: End-to-end behavioral contract probe for catnest.py (penetration, scoped expiry, single-source roles & anti-drift)
 
 from __future__ import annotations
 
@@ -13,6 +14,9 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from catnest_lib import load_roles_config, render_roles_markdown  # noqa: E402
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess:
@@ -38,7 +42,7 @@ def main() -> int:
             encoding="utf-8",
         )
         (sandbox / "probes" / "probe_fail.py").write_text(
-            "#!/usr/bin/env python3\n# watches: *\n# atoms: C1\n# summary: Deliberate fail\n"
+            "#!/usr/bin/env python3\n# kind: ANCHORED\n# watches: *\n# atoms: C1\n# summary: Deliberate fail\n"
             "import sys; print('boom'); sys.exit(1)\n",
             encoding="utf-8",
         )
@@ -51,7 +55,7 @@ def main() -> int:
         uses_file = sandbox / "_state" / "uses.json"
         assert not uses_file.exists(), "recall must not self-touch uses.json!"
 
-        # 2. Scoped field expiry: unrelated commit must NOT expire field:car(src/arm/*)
+        # 2. Scoped field expiry & probe tier columns: unrelated commit must NOT expire field:car(src/arm/*)
         run(["git", "-C", str(sandbox), "init", "-q"])
         run(["git", "-C", str(sandbox), "config", "user.email", "test@local"])
         run(["git", "-C", str(sandbox), "config", "user.name", "test"])
@@ -60,6 +64,7 @@ def main() -> int:
         run(["git", "-C", str(sandbox), "commit", "-qm", "unrelated"])
         r = run([*cli, "--root", str(sandbox), "check", "--all"])
         assert r.returncode == 1
+        assert "HYGIENE: 0/0 | ANCHORED: 0/1" in r.stdout, f"missing probe tier summary: {r.stdout}"
         suspect = (sandbox / "_state" / "suspect.md").read_text("utf-8")
         assert "## FAIL" in suspect and "## EXPIRED" not in suspect, f"false EXPIRED storm on unrelated commit: {suspect}"
         # Verify assemble attaches suspect when ONLY ## FAIL is present (and verify atom C1 adoption = 1/1)
@@ -77,9 +82,14 @@ def main() -> int:
         suspect2 = (sandbox / "_state" / "suspect.md").read_text("utf-8")
         assert "## EXPIRED" in suspect2 and "field:car@2020-01-01" in suspect2, f"missed scoped EXPIRED: {suspect2}"
 
-        # 4. assemble default bundle + role cards + suspect; cross-project --meta inbox isolation; trace signals
-        r = run([*cli, "--root", str(sandbox), "assemble", "orange"])
-        assert r.returncode == 0 and "[ROLE: main]" in r.stdout and "### [C1] 测试事实" in r.stdout, f"default bundle missing: {r.stdout}"
+        # 4. assemble default bundle + role cards + --task collision; cross-project --meta inbox isolation; trace signals
+        r = run([*cli, "--root", str(sandbox), "assemble", "orange", "--task", "暗语命中"])
+        assert (
+            r.returncode == 0
+            and "[ROLE: main]" in r.stdout
+            and "### [C1] 测试事实" in r.stdout
+            and "[TASK COLLISION: 暗语命中]" in r.stdout
+        ), f"default bundle / task collision missing: {r.stdout}"
         r_fo = run([*cli, "--root", str(sandbox), "assemble", "orange", "--files-only"])
         assert r_fo.returncode == 0 and "### [C1] 测试事实" not in r_fo.stdout
         r_dep = run([*cli, "--root", str(sandbox), "assemble", "--role", "deputy"])
@@ -146,7 +156,12 @@ def main() -> int:
             and "等子代理期间下场直读" in trace_md
         ), f"missed new trace signals: {trace_md}"
 
-    # 5. Anti-drift: README.md documented commands must match `catnest.py --help` & no stale `flow ` CLI residue
+    # 5. Single-source roles.json <-> templates/roles.md + README anti-drift
+    roles_md = root / "templates" / "roles.md"
+    if (root / "roles.json").is_file() and roles_md.is_file():
+        expected_roles = render_roles_markdown(load_roles_config(root))
+        assert roles_md.read_text("utf-8") == expected_roles, "templates/roles.md drifted from single-source roles.json!"
+
     help_txt = run([*cli, "--help"]).stdout
     readme = root / "README.md"
     assert readme.is_file(), "README.md missing (cold reader entry point)"
@@ -157,7 +172,7 @@ def main() -> int:
         txt = p.read_text("utf-8")
         assert "flow assemble" not in txt and "flow friction" not in txt, f"stale `flow` CLI name in {p.name}"
 
-    print("OK: init/recall/adoption/scoped-expiry/penetration/assemble/friction/purr + README anti-drift passed")
+    print("OK: init/recall/adoption/scoped-expiry/penetration/assemble-task/friction/purr + roles.json/README anti-drift passed")
     return 0
 
 

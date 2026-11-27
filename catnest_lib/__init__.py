@@ -1,19 +1,86 @@
-"""Shared atom parsing and ACT-R touch state for flow-engine."""
+"""Shared atom parsing, single-source role policy, and ACT-R touch state for catnest."""
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 from pathlib import Path
 
 ATOM_RE = re.compile(r"^###\s+\[([A-Za-z0-9_-]+)\]\s+(.+)$", re.M)
-NATURE_RE = re.compile(r"^\s*-\s*\*\*性质\*\*[：:]\s*`?\[(意图|事实)\]`?", re.M)
+NATURE_RE = re.compile(r"^\s*-\s*\*\*性质\*\*[：:]\s*`?\[(河岸|裁决|事实|意图)\]`?", re.M)
 ALIAS_RE = re.compile(r"^\s*-\s*\*\*别名\*\*[：:]\s*(.+)$", re.M)
 ANCHOR_RE = re.compile(r"^\s*-\s*\*\*锚点\*\*[：:]\s*(.+)$", re.M)
+EVIDENCE_RE = re.compile(r"^\s*(?:-\s*)?(?:\*\*证据\*\*|证据)\s*[：:]\s*(.+)$", re.M)
+ORIGIN_RE = re.compile(r"^\s*(?:-\s*)?(?:\*\*来由\*\*|来由)\s*[：:]\s*(.+)$", re.M)
+COLLISION_RE = re.compile(r"^\s*(?:-\s*)?(?:\*\*碰撞\*\*|碰撞)\s*[：:]\s*(.+)$", re.M)
 DEATH_RE = re.compile(r"^\s*-\s*\*\*死亡条件\*\*[：:]\s*(.+)$", re.M)
+MATERIALIZED_RE = re.compile(r"^\s*(?:-\s*)?(?:\*\*物化\*\*|物化)\s*[：:]\s*(.+)$", re.M)
+PLACEHOLDER_VAL_RE = re.compile(r"^(?:无|暂无|待补|待定|none|n/a|tbd|-+)$", re.I)
+
+
+def extract_materialized_paths(mat_text: str) -> list[str]:
+    ticks = re.findall(r"`([^`]+)`", mat_text)
+    tokens = ticks if ticks else re.split(r"[,，;；\s]+", mat_text)
+    out: list[str] = []
+    for tok in tokens:
+        p = tok.split("#", 1)[0].strip().strip("`'\"")
+        if p and p not in (".", "./", "/") and not PLACEHOLDER_VAL_RE.match(p):
+            out.append(p)
+    return out
+UNCLOSED_RE = re.compile(r"(?:\[未闭合\]|\[UNCLOSED\]|(?:^|\n|\*\*)\s*张力\s*(?:\*\*)?\s*[：:])", re.I)
 USES_KEEP = 40
+
+
+def engine_root() -> Path:
+    return Path(os.environ.get("CATNEST_HOME") or Path(__file__).resolve().parent.parent).expanduser().resolve()
+
+
+def is_unclosed_tension(text: str, title: str = "") -> bool:
+    combined = f"{title}\n{text}" if title else text
+    return bool(UNCLOSED_RE.search(combined))
+
+
+def load_roles_config(root: Path | None = None) -> dict:
+    base_file = engine_root() / "roles.json"
+    cfg: dict = json.loads(base_file.read_text("utf-8")) if base_file.is_file() else {"defaults": {}, "roles": {}}
+    if root is not None:
+        custom = root.resolve() / "roles.json"
+        if custom.is_file() and custom != base_file.resolve():
+            try:
+                ov = json.loads(custom.read_text("utf-8"))
+                cfg.setdefault("defaults", {}).update(ov.get("defaults") or {})
+                for rname, rspec in (ov.get("roles") or {}).items():
+                    if rname in cfg.setdefault("roles", {}):
+                        cfg["roles"][rname] = {**cfg["roles"][rname], **rspec}
+                    else:
+                        cfg["roles"][rname] = rspec
+            except (OSError, ValueError):
+                pass
+    return cfg
+
+
+def render_role_card_from_config(role: str, cfg: dict) -> str:
+    rspec = (cfg.get("roles") or {}).get(role)
+    if not rspec:
+        return ""
+    lines = []
+    for b in rspec.get("bullets") or []:
+        lines.append(f"- {b.format_map(rspec)}")
+    return "\n".join(lines)
+
+
+def render_roles_markdown(cfg: dict) -> str:
+    lines = ["# catnest 角色行动契约卡（由 `roles.json` 单一真源生成，随 `assemble --role` 注入）", ""]
+    for role in ("main", "deputy", "worker", "tentacle"):
+        if role not in (cfg.get("roles") or {}):
+            continue
+        lines.append(f"## {role}")
+        lines.append(render_role_card_from_config(role, cfg))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def state_dir(root: Path) -> Path:
@@ -69,6 +136,11 @@ def parse_canon_atoms(root: Path) -> list[dict]:
             aliases = [a.strip() for a in re.split(r"[,，、;；]", am.group(1)) if a.strip()] if am else []
             nm = NATURE_RE.search(body)
             anc = ANCHOR_RE.search(body)
+            ev = EVIDENCE_RE.search(body)
+            orig = ORIGIN_RE.search(body)
+            col = COLLISION_RE.search(body)
+            dm = DEATH_RE.search(body)
+            mat = MATERIALIZED_RE.search(body)
             out.append({
                 "kind": "canon",
                 "id": m.group(1),
@@ -79,7 +151,16 @@ def parse_canon_atoms(root: Path) -> list[dict]:
                 "aliases": aliases,
                 "anchor_text": anc.group(1).strip() if anc else "",
                 "has_anchor": bool(anc),
-                "has_death": bool(DEATH_RE.search(body)),
+                "evidence_text": ev.group(1).strip() if ev else "",
+                "has_evidence": bool(ev),
+                "origin_text": orig.group(1).strip() if orig else "",
+                "has_origin": bool(orig),
+                "collision_text": col.group(1).strip() if col else "",
+                "has_collision": bool(col),
+                "death_text": dm.group(1).strip() if dm else "",
+                "has_death": bool(dm),
+                "materialized_text": mat.group(1).strip() if mat else "",
+                "has_materialized": bool(mat),
                 "mtime": f.stat().st_mtime,
             })
     return out

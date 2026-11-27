@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
+# kind: HYGIENE
 # watches: path/or/glob/**
 # atoms: ATOM_ID
-# summary: One-line description of the behavioral contract this probe checks
+# summary: One-line description of the behavioral contract this probe checks (use `# kind: ANCHORED` when backed by external truth)
 
 from __future__ import annotations
 

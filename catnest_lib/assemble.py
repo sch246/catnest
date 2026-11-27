@@ -4,25 +4,26 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 from pathlib import Path
 
-from . import ATOM_RE, touch_key
+from . import ATOM_RE, engine_root, is_unclosed_tension, load_roles_config, render_role_card_from_config, touch_key
+from .recall import recall_task_collisions
 
 RECIPE_LINE_RE = re.compile(r"^\s*-\s*`([A-Za-z0-9_-]+)`(?:\s*[（(]([^）)]*)[）)])?[：:]\s*(.+)$")
 BACKTICK_RE = re.compile(r"`([^`]+)`")
 DEFAULT_MAX_PRINT_LINES = 450
-
-
-def _engine_root() -> Path:
-    return Path(os.environ.get("CATNEST_HOME") or Path(__file__).resolve().parent.parent).expanduser().resolve()
+CANON_WRITE_HINT = "- 写 canon 必带来由与可观察死法；能物化成代码/探针即撤出条文"
 
 
 def load_role_card(role: str, root: Path | None = None) -> str:
     if not role or role == "none":
         return ""
-    cands = ([root / "templates" / "roles.md"] if root is not None else []) + [_engine_root() / "templates" / "roles.md"]
+    cfg = load_roles_config(root)
+    rendered = render_role_card_from_config(role, cfg)
+    if rendered:
+        return rendered
+    cands = ([root / "templates" / "roles.md"] if root is not None else []) + [engine_root() / "templates" / "roles.md"]
     text = next((p.read_text("utf-8") for p in cands if p.is_file()), "")
     if not text:
         return ""
@@ -73,13 +74,32 @@ def resolve_recipe(root: Path, name: str) -> tuple[dict, list[Path], list[str]]:
     return rec, files, missing
 
 
+def _format_task_collisions(task: str, hits: list[dict]) -> str:
+    lines = [f"\n--- [TASK COLLISION: {task}] ---"]
+    if not hits:
+        lines.append("(no lexical hits; check aliases or broaden query)")
+        return "\n".join(lines)
+    for i, h in enumerate(hits, 1):
+        if h.get("kind") == "open" and is_unclosed_tension(h.get("body", ""), h.get("title", "")):
+            tag = "未闭合"
+        else:
+            tag = h.get("nature") or h["kind"]
+        lines.append(f"{i}. [{tag}] {h['id']} — {h['title']} ({h['path']}, score={h['score']})")
+        if h.get("snippet"):
+            lines.append(f"   > {h['snippet']}")
+    return "\n".join(lines)
+
+
 def cmd_assemble(root: Path, args: argparse.Namespace) -> int:
     role = getattr(args, "role", "main") or "main"
+    task = getattr(args, "task", None)
     role_card = load_role_card(role, root)
     recipes = parse_recipes(root)
     if args.list or not args.recipe:
-        if not args.list and role in ("deputy", "tentacle") and role_card and not args.json:
-            print(f"--- [ROLE: {role}] ---\n{role_card}")
+        if not args.list and role in ("deputy", "worker", "tentacle") and role_card and not args.json:
+            print(f"--- [ROLE: {role}] ---\n{role_card}\n{CANON_WRITE_HINT}")
+            if task:
+                print(_format_task_collisions(task, recall_task_collisions(root, task, top=5)))
             return 0
         if args.json:
             print(json.dumps(recipes, ensure_ascii=False, indent=2))
@@ -109,9 +129,19 @@ def cmd_assemble(root: Path, args: argparse.Namespace) -> int:
                 for aid, _title in ATOM_RE.findall(f.read_text("utf-8")):
                     touch_key(root, aid)
 
+    collisions = recall_task_collisions(root, task, top=5) if task else []
     entries = [{"path": str(f.relative_to(root)), "lines": len(f.read_text("utf-8").splitlines())} for f in out_files if f.is_file()]
     if args.json:
-        print(json.dumps({"recipe": rec["name"], "role": role, "files": entries, "missing": missing, "suspect_attached": has_suspect}, ensure_ascii=False, indent=2))
+        payload: dict = {
+            "recipe": rec["name"],
+            "role": role,
+            "files": entries,
+            "missing": missing,
+            "suspect_attached": has_suspect,
+        }
+        if task is not None:
+            payload["task_collisions"] = [{k: v for k, v in h.items() if k != "body"} for h in collisions]
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
     total_lines = sum(e["lines"] for e in entries)
@@ -125,11 +155,13 @@ def cmd_assemble(root: Path, args: argparse.Namespace) -> int:
     force_print = getattr(args, "print_bundle", False)
     max_lines = getattr(args, "max_lines", DEFAULT_MAX_PRINT_LINES)
     if role_card and not files_only:
-        print(f"\n--- [ROLE: {role}] ---\n{role_card}")
+        print(f"\n--- [ROLE: {role}] ---\n{role_card}\n{CANON_WRITE_HINT}")
     if files_only:
         return 0
     if not force_print and total_lines > max_lines:
         print(f"\n! bundle has {total_lines}L (> {max_lines}L); slim recipe or pass `--print` to force full output")
+        if task:
+            print(_format_task_collisions(task, collisions))
         return 0
 
     print("\n" + "=" * 60)
@@ -137,4 +169,6 @@ def cmd_assemble(root: Path, args: argparse.Namespace) -> int:
         if f.is_file():
             print(f"\n--- {f.relative_to(root)} ---\n")
             print(f.read_text("utf-8").rstrip())
+    if task:
+        print(_format_task_collisions(task, collisions))
     return 0

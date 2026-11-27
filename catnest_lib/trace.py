@@ -54,6 +54,18 @@ def _classify_heavy_cmds(cmd: str) -> list[str]:
     return hits
 
 
+def _is_catnest_breaker_message(step: dict) -> bool:
+    message = str(step.get("content") or step.get("error") or "")
+    return "猫闸断路器" in message or "猫闸断流熔断" in message
+
+
+def _is_catnest_interrupt_event(step: dict) -> bool:
+    if step.get("type") != "ERROR_MESSAGE" and step.get("status") != "ERROR":
+        return False
+    message = str(step.get("content") or step.get("error") or "").lower()
+    return "stream was interrupted" in message and not _is_catnest_breaker_message(step)
+
+
 def _scan_single_transcript(transcript_path: Path) -> dict:
     src_path = _pick_transcript_file(transcript_path)
     reads: dict[str, list[int]] = defaultdict(list)
@@ -101,11 +113,11 @@ def _scan_single_transcript(transcript_path: Path) -> dict:
                 if last_dt is None or dt > last_dt:
                     last_dt = dt
 
-            if stype == "ERROR_MESSAGE" or status == "ERROR":
+            if (stype == "ERROR_MESSAGE" or status == "ERROR") and not _is_catnest_breaker_message(step):
                 err_kind = str(step.get("error") or content)[:60].splitlines()[0] if (step.get("error") or content) else "ERROR"
                 err_kind = re.sub(r"/[^\s]+", "<path>", err_kind)
                 errors.append({"step": idx, "type": stype, "kind": err_kind})
-                if "stream was interrupted" in str(content).lower():
+                if _is_catnest_interrupt_event(step):
                     interrupt_steps.append(idx)
                     if dt is not None:
                         interrupt_dts.append(dt)

@@ -43,7 +43,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             "## 猫配方（`catnest assemble <猫名>`）\n"
             "- `orange`（橘猫 · 全局前台与碰撞裁决）：`canon/*.md`, `open/*.md`\n\n"
             "## 当前活接力棒（滚动覆写，≤5 行）\n"
-            "- **初始化**：等待写入首批 `[意图]`/`[事实]` 原子与 `probes/` 猫须探针。\n",
+            "- **初始化**：等待写入首批 `[河岸]`/`[裁决]`/`[事实]` 原子与 `probes/` 猫须探针。\n",
             encoding="utf-8",
         )
     print(f"initialized catnest: {root}")
@@ -84,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status", help="Show workflow health overview")
     s.set_defaults(handler=cmd_status)
 
-    s = sub.add_parser("recall", help="BM25 + alias + ACT-R recall across canon/open/logs")
+    s = sub.add_parser("recall", help="BM25 + alias + decay-exempt riverbank/evidence recall")
     s.add_argument("query")
     s.add_argument("--top", type=int, default=6)
     s.add_argument("--no-logs", action="store_true")
@@ -97,7 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("assemble", help="Resolve a boot.md context assembly recipe (prints bundle by default)")
     s.add_argument("recipe", nargs="?")
-    s.add_argument("--role", default="main", choices=("main", "deputy", "tentacle", "none"), help="Role action card to prepend")
+    s.add_argument("--role", default="main", choices=("main", "deputy", "worker", "tentacle", "none"), help="Role action card to prepend")
+    s.add_argument("--task", help="Auto-run recall collision against riverbanks, unclosed tensions & external evidence")
     s.add_argument("--list", action="store_true")
     s.add_argument("--files-only", action="store_true", help="Only list resolved file paths without printing contents")
     s.add_argument("--print", dest="print_bundle", action="store_true", help="Force full bundle output even above --max-lines")
@@ -106,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true")
     s.set_defaults(handler=cmd_assemble)
 
-    s = sub.add_parser("check", help="Run behavior probes and refresh _state/suspect.md")
+    s = sub.add_parser("check", help="Run behavior probes (HYGIENE | ANCHORED) and refresh _state/suspect.md")
     s.add_argument("--all", action="store_true", help="Run all probes regardless of diff")
     s.add_argument("--mutate", action="store_true", help="Run probe mutation test to detect fake penetration")
     s.add_argument("--diff", help="Git diff range, e.g. HEAD~1..HEAD")
@@ -123,13 +124,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--meta", action="store_true", help="Route workflow friction back to catnest Project #0")
     s.set_defaults(handler=cmd_friction)
 
-    s = sub.add_parser("settle", aliases=["purr"], help="Sink stale open/, emit passive retro signals, and blind-sample canon")
+    s = sub.add_parser("settle", aliases=["purr"], help="Sink stale open/ (excluding unclosed tensions), emit retro signals, and sample canon")
     s.add_argument("--days", type=int, default=14)
     s.add_argument("--sample", type=int, default=2)
     s.add_argument("--seed", type=int)
     s.add_argument("--repo", help="Target code repo for git revert signals")
     s.add_argument("--transcript", help="Optional session transcript.jsonl path for privacy-safe step pointers")
-    s.add_argument("--apply", action="store_true", help="Actually move stale open/ items into logs/underwater-*")
+    s.add_argument("--apply", action="store_true", help="Actually move stale resolved open/ items into logs/underwater-*")
     s.set_defaults(handler=cmd_settle)
     return p
 

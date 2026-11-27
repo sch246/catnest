@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
+# kind: HYGIENE
 # watches: boot.md, canon/*.md, open/*.md, probes/*.py
 # atoms: R1
-# summary: Check boot.md stays a pure recipe router (no canon embedding, all cat recipes resolve)
+# summary: Check boot.md stays a pure recipe router (no canon embedding, valid recipes & external evidence globs)
 
 from __future__ import annotations
 
@@ -43,6 +44,18 @@ def main() -> int:
             errors.append(f"recipe `{name}` has unresolved patterns: {', '.join(missing)}")
         if not files:
             errors.append(f"recipe `{name}` resolves to 0 files")
+
+    in_ev = False
+    for ln in lines:
+        s = ln.strip()
+        if s.startswith("## "):
+            in_ev = ("外部证据源" in s) or ("external evidence" in s.lower())
+            continue
+        if in_ev and s.startswith("-"):
+            ticks = re.findall(r"`([^`]+)`", s)
+            for pat in ticks:
+                if pat.startswith(("/", "~")) or not pat.lower().endswith(".md"):
+                    errors.append(f"invalid external evidence whitelist pattern `{pat}` (must be relative `*.md`)")
 
     if errors:
         for e in errors:
