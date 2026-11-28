@@ -472,6 +472,64 @@ class TestCatnestGate(unittest.TestCase):
         self.assertEqual(d2["action"], "overwrite")
         self.assertIn("[猫闸客观审计 · 测试负债: +40行 | 新建测试文件 1 个 (app.test.ts)]", d2["overwrite"]["text"])
 
+    def test_gate_telemetry_records_denominators_bypasses_without_leaking_secrets_and_purr_summarizes(self) -> None:
+        # Allowed `note` command passes in registered main session
+        secret_idea = "PRIVATE_TOKEN_XYZ_999"
+        r_note = gate.evaluate_pre_tool({
+            "conversationId": "root-cid", "cwd": str(self.ws), "transcriptPath": str(self.root_tp),
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": f"python3 {ROOT}/catnest.py --root {self.nest} note '{secret_idea}'"},
+            },
+        })
+        self.assertEqual(r_note["action"], "pass")
+
+        # Disallowed main command triggers `main_disallowed_cmd` deny
+        r_bad = gate.evaluate_pre_tool({
+            "conversationId": "root-cid", "cwd": str(self.ws), "transcriptPath": str(self.root_tp),
+            "toolCall": {"name": "run_command", "args": {"CommandLine": f"curl https://secret.internal/{secret_idea}"}},
+        })
+        self.assertEqual(r_bad["action"], "deny")
+
+        # Dispatch test-debt deny then retry bypass
+        brief_payload = {
+            "conversationId": "root-cid", "cwd": str(self.ws), "transcriptPath": str(self.root_tp),
+            "toolCall": {"name": "swarm", "args": {"action": "add", "name": "t-w", "brief": f"改 a.py 和 test_a.py ({secret_idea})"}},
+        }
+        self.assertEqual(gate.evaluate_pre_tool(brief_payload)["action"], "deny")
+        self.assertEqual(gate.evaluate_pre_tool(brief_payload)["action"], "overwrite")
+
+        # Escape phrase unregisters session and logs `escape_phrase`
+        gate.resolve_session_context({
+            "conversationId": "root-cid", "cwd": str(self.ws), "transcriptPath": str(self.root_tp),
+            "lastUserInput": f"请解除猫闸 {secret_idea}",
+        })
+
+        ev_file = self.gate_dir / "events.jsonl"
+        self.assertTrue(ev_file.is_file())
+        raw_ev = ev_file.read_text("utf-8")
+        self.assertNotIn(secret_idea, raw_ev)
+        rows = [json.loads(ln) for ln in raw_ev.splitlines() if ln.strip()]
+        ev_pairs = {(r["event"], r["rule"]) for r in rows}
+        self.assertIn(("assemble_register", "assemble_register"), ev_pairs)
+        self.assertIn(("pass", ""), ev_pairs)
+        self.assertIn(("deny", "main_disallowed_cmd"), ev_pairs)
+        self.assertIn(("deny", "dispatch_test_debt"), ev_pairs)
+        self.assertIn(("retry_bypass", "dispatch_test_debt"), ev_pairs)
+        self.assertIn(("spawn_stamp", "worker"), ev_pairs)
+        self.assertIn(("escape_phrase", "escape_phrase"), ev_pairs)
+
+        # `catnest.py purr` aggregates and displays the denominator & rule breakdown
+        env = {**os.environ, "CATNEST_GATE_DIR": str(self.gate_dir)}
+        p = subprocess.run(
+            [sys.executable, str(ROOT / "catnest.py"), "--root", str(self.nest), "purr"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        self.assertEqual(p.returncode, 0, msg=p.stdout + p.stderr)
+        self.assertIn("猫闸客观分母", p.stdout)
+        self.assertIn("main_disallowed_cmd", p.stdout)
+        self.assertIn("dispatch_test_debt:retry_bypass", p.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -55,10 +55,10 @@ ALLOWED_MAIN_TOOLS = {
     "invoke_subagent", "send_message", "manage_subagents", "manage_task",
     "schedule", "ask_question", "swarm", "read_board", "post_message", "swarm_wait",
 }
-ALLOWED_CATNEST_CMDS = {"status", "recall", "assemble", "touch", "check", "friction", "purr", "settle"}
+ALLOWED_CATNEST_CMDS = {"status", "recall", "assemble", "touch", "check", "friction", "note", "inbox", "purr", "settle"}
 MUTATING_TOOLS = {"run_command", "write_file", "edit_file"}
 SPAWN_TOOLS = {"invoke_subagent", "define_subagent", "run_workflow"}
-ASSEMBLE_VALUE_FLAGS = {"--role", "--task", "--max-lines", "--root"}
+ASSEMBLE_VALUE_FLAGS = {"--role", "--task", "--max-lines", "--max-bytes", "--root"}
 
 
 def _engine_root() -> Path:
@@ -600,6 +600,9 @@ def resolve_session_context(payload: dict) -> dict | None:
     escape = os.environ.get("CATNEST_GATE_ESCAPE") or defs["escape_phrase"]
     main_file = cache / f"main_{cid}.json"
     if escape and escape in last_input:
+        prev_main = _load_json(main_file)
+        if prev_main:
+            _log_gate_event("escape_phrase", role="main", rule="escape_phrase", nest_root=prev_main.get("nest_root"))
         main_file.unlink(missing_ok=True)
         return None
 
@@ -784,15 +787,40 @@ def _inspect_worker_test_debt(cwd: str, st: dict) -> dict:
     }
 
 
+def _log_gate_event(
+    event: str,
+    *,
+    role: str = "",
+    rule: str = "",
+    tool: str = "",
+    nest_root: Path | str | None = None,
+) -> None:
+    """Append privacy-safe gate telemetry (rule IDs and counts only; never command/path/prompt text)."""
+    try:
+        nest_str = str(Path(nest_root).expanduser().resolve()) if nest_root else ""
+        rec = {
+            "ts": round(time.time(), 3),
+            "event": event,
+            "role": role,
+            "rule": rule,
+            "tool": tool,
+            "nest": nest_str,
+        }
+        ev_path = gate_cache_dir() / "events.jsonl"
+        with ev_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def _check_dispatch_test_debt(
     role: str, child_role: str, tname: str, args: dict, text: str,
-    pol: dict, st: dict, st_path: Path,
+    pol: dict, st: dict, st_path: Path, nest_root: Path | None = None,
 ) -> dict | None:
     defs = pol.get("defaults") or {}
     if role != "main" or child_role != "worker" or not defs.get("test_debt_gate_enabled", True):
         return None
-    if EXTERNAL_ANCHOR_RE.search(text):
-        return None
+    has_anchor = bool(EXTERNAL_ANCHOR_RE.search(text))
     hits: list[str] = []
     for ln in text.splitlines():
         if NEGATION_LINE_RE.search(ln):
@@ -803,10 +831,14 @@ def _check_dispatch_test_debt(
                 hits.append(tok)
     if not hits:
         return None
+    if has_anchor:
+        _log_gate_event("anchor_pass", role=role, rule="dispatch_test_debt", tool=tname, nest_root=nest_root)
+        return None
     target_id = str(args.get("name") or args.get("Role") or "")
     sig = hashlib.sha1(f"{tname}:{target_id}:{','.join(sorted(hits))}".encode("utf-8")).hexdigest()[:12]
     warned: list[str] = list(st.get("warned_test_dispatches") or [])
     if sig in warned:
+        _log_gate_event("retry_bypass", role=role, rule="dispatch_test_debt", tool=tname, nest_root=nest_root)
         return None
     warned.append(sig)
     st["warned_test_dispatches"] = warned[-20:]
@@ -816,13 +848,30 @@ def _check_dispatch_test_debt(
         f"猫闸入口软拦截（反自证单测）：派给 `worker` 的任务单分配了测试文件（{sample}），但未声明实现外真值来源。"
         "请移除无必要的测试所有权（改报编译结果），或在派单中显式写明「外部实尺: <来源>」/「存量同步: <理由>」；"
         "若确需如此，原样重试一次即放行。",
+        role=role, rule="dispatch_test_debt", tool=tname, nest_root=nest_root,
     )
 
 
-def _deny_with_streak(st: dict, st_path: Path, reason: str) -> dict:
+def _deny_with_streak(
+    st: dict,
+    st_path: Path,
+    reason: str,
+    *,
+    role: str = "",
+    rule: str = "",
+    tool: str = "",
+    nest_root: Path | str | None = None,
+) -> dict:
     st["denied_streak"] = st.get("denied_streak", 0) + 1
     st["updated_at"] = time.time()
     _save_json(st_path, st)
+    _log_gate_event(
+        "deny",
+        role=role or str(st.get("role") or ("main" if st_path.name.startswith("main_") else "")),
+        rule=rule or "unspecified",
+        tool=tool,
+        nest_root=nest_root or st.get("nest_root"),
+    )
     return {"action": "deny", "reason": reason}
 
 
@@ -904,7 +953,10 @@ def _handle_spawn_tool(
     if tname not in SPAWN_TOOLS and not is_swarm_mut:
         return None
     if not rspec.get("can_spawn", False):
-        return _deny_with_streak(st, st_path, f"猫闸拦截：`{role}` 禁止派生子代理（0 spawn），请只答当前窄问题并回传。")
+        return _deny_with_streak(
+            st, st_path, f"猫闸拦截：`{role}` 禁止派生子代理（0 spawn），请只答当前窄问题并回传。",
+            role=role, rule="sub_no_spawn", tool=tname, nest_root=nest_root,
+        )
     if not is_swarm_add and tname not in SPAWN_TOOLS:
         return None
 
@@ -914,7 +966,7 @@ def _handle_spawn_tool(
         role_arg = str(args.get("Role") or "")
         clean_prompt = ROLE_CARD_BLOCK_RE.sub("", STAMP_ANY_RE.sub("", raw_prompt)).lstrip()
         child_role = _infer_child_role(clean_prompt, sub_type=sub_type, role_arg=role_arg)
-        warn_res = _check_dispatch_test_debt(role, child_role, tname, args, clean_prompt, pol, st, st_path)
+        warn_res = _check_dispatch_test_debt(role, child_role, tname, args, clean_prompt, pol, st, st_path, nest_root)
         if warn_res is not None:
             return warn_res
         new_prompt = _build_dispatch_text(child_role, nest_root, cid, pol, clean_prompt)
@@ -928,13 +980,14 @@ def _handle_spawn_tool(
         st["denied_streak"] = 0
         st["updated_at"] = time.time()
         _save_json(st_path, st)
+        _log_gate_event("spawn_stamp", role=role, rule=child_role, tool=tname, nest_root=nest_root)
         return {"action": "overwrite", "overwrite": overwrites}
 
     if is_swarm_add:
         raw_brief = str(args.get("brief") or "")
         clean_brief = ROLE_CARD_BLOCK_RE.sub("", STAMP_ANY_RE.sub("", raw_brief)).lstrip()
         child_role = _infer_child_role(clean_brief, role_arg=str(args.get("name") or ""))
-        warn_res = _check_dispatch_test_debt(role, child_role, tname, args, clean_brief, pol, st, st_path)
+        warn_res = _check_dispatch_test_debt(role, child_role, tname, args, clean_brief, pol, st, st_path, nest_root)
         if warn_res is not None:
             return warn_res
         new_brief = _build_dispatch_text(child_role, nest_root, cid, pol, clean_brief)
@@ -943,6 +996,7 @@ def _handle_spawn_tool(
         st["denied_streak"] = 0
         st["updated_at"] = time.time()
         _save_json(st_path, st)
+        _log_gate_event("spawn_stamp", role=role, rule=child_role, tool=tname, nest_root=nest_root)
         return {"action": "overwrite", "overwrite": {"brief": new_brief}}
 
     if role == "main":
@@ -979,6 +1033,7 @@ def _eval_main_tool(
                 f"猫闸拦截：向子代理 `{recip[:8]}` 续塞已达上限（续塞 {sent_count}/{max_cont} 次, "
                 f"~{child_tokens}/{child_hard_tokens} tokens）。"
                 "会话即抛：请写交接至 `open/<切片>.md` 并新开干净子代理接棒。",
+                role="main", rule="max_continuations_or_hard_tokens", tool=tname, nest_root=nest_root,
             )
         if recip:
             cont[recip] = sent_count + 1
@@ -995,6 +1050,7 @@ def _eval_main_tool(
             return _deny_with_streak(
                 st, st_path,
                 "猫闸拦截：主控严禁直读图片/PDF/二进制文件。请派 `tentacle`（TypeName='research'）查看并回传 ≤20 行结论。",
+                role="main", rule="main_binary_read", tool=tname, nest_root=nest_root,
             )
         p = Path(raw_p).expanduser()
         if not p.is_absolute():
@@ -1015,12 +1071,16 @@ def _eval_main_tool(
             return _deny_with_streak(
                 st, st_path,
                 "猫闸拦截（派出即停）：当前存在运行中的未归子代理或本轮刚发出派单，严禁主控在等待期间偷读业务文件！请结束回合等待唤醒。",
+                role="main", rule="main_read_while_children_active", tool=tname, nest_root=nest_root,
             )
 
         max_files = int(rspec.get("direct_read_max_files") or 3)
         max_bytes = int(rspec.get("direct_read_max_file_bytes") or 32768)
         if not rp.is_file():
-            return _deny_with_streak(st, st_path, "猫闸拦截：主控仅允许直读已知存在的小文本路径，未知路径请派 `tentacle` 查证。")
+            return _deny_with_streak(
+                st, st_path, "猫闸拦截：主控仅允许直读已知存在的小文本路径，未知路径请派 `tentacle` 查证。",
+                role="main", rule="main_read_unknown_path", tool=tname, nest_root=nest_root,
+            )
         if BINARY_EXT_RE.search(raw_p):
             # Allowed binary (screenshots) is for verifying evidence before writing truth; it is not
             # business-code exploration, so it skips the text byte cap and file quota.
@@ -1029,6 +1089,7 @@ def _eval_main_tool(
             return _deny_with_streak(
                 st, st_path,
                 f"猫闸拦截：目标文件超过主控直读上限（>{max_bytes // 1024}KB），请传行号小范围读取或派 `tentacle`。",
+                role="main", rule="main_read_file_bytes", tool=tname, nest_root=nest_root,
             )
         seen_files: list[str] = list(st.get("direct_read_files") or [])
         rp_str = str(rp)
@@ -1037,6 +1098,7 @@ def _eval_main_tool(
                 return _deny_with_streak(
                     st, st_path,
                     f"猫闸拦截：主控已知路径业务直读已达上限（{max_files}/{max_files} 个文件），其余问题请派 `tentacle` 或 `deputy`。",
+                    role="main", rule="main_read_file_quota", tool=tname, nest_root=nest_root,
                 )
             seen_files.append(rp_str)
             st["direct_read_files"] = seen_files
@@ -1054,6 +1116,7 @@ def _eval_main_tool(
         return _deny_with_streak(
             st, st_path,
             "猫闸拦截：主控只允许编辑猫窝/制品目录下的 *.md，业务源码与探针修改请派 `worker` 或 `deputy`。",
+            role="main", rule="main_write_outside_nest", tool=tname, nest_root=nest_root,
         )
 
     if tname == "run_command":
@@ -1063,9 +1126,13 @@ def _eval_main_tool(
         return _deny_with_streak(
             st, st_path,
             "猫闸拦截：主控仅允许运行纯 `catnest.py` 管理命令与猫窝 `git status/log/diff`，执行/构建请派 `worker` 或 `tentacle`。",
+            role="main", rule="main_disallowed_cmd", tool=tname, nest_root=nest_root,
         )
 
-    return _deny_with_streak(st, st_path, f"猫闸拦截：主控禁用 `{tname}` 直接探测，请交由 `tentacle` 或 `deputy`。")
+    return _deny_with_streak(
+        st, st_path, f"猫闸拦截：主控禁用 `{tname}` 直接探测，请交由 `tentacle` 或 `deputy`。",
+        role="main", rule="main_disallowed_tool", tool=tname, nest_root=nest_root,
+    )
 
 
 def _eval_subagent_tool(
@@ -1083,6 +1150,7 @@ def _eval_subagent_tool(
         return _deny_with_streak(
             st, st_path,
             f"猫闸断流熔断：当前会话累计发生 {total_int} 次 `stream was interrupted`（>=3），禁止继续读写或执行空烧，请立即交卷退役。",
+            role=role, rule="sub_interrupt_breaker", tool=tname, nest_root=nest_root,
         )
 
     # 2. One-shot operator rule (`worker` retired after posting `[done]`)
@@ -1094,6 +1162,7 @@ def _eval_subagent_tool(
         return _deny_with_streak(
             st, st_path,
             "猫闸一次性算子熔断：该 worker 已发送过 `[done]` 退役，严禁跨任务复用执行读写或命令！请回复提示协调者调用 `swarm add` 启动干净新会话。",
+            role=role, rule="sub_one_shot_done", tool=tname, nest_root=nest_root,
         )
 
     if tname == "post_message":
@@ -1104,14 +1173,21 @@ def _eval_subagent_tool(
                 threshold = int(rspec.get("test_debt_line_threshold") or defs.get("test_debt_line_threshold") or 30)
                 if debt["new_test_files"] or debt["net_lines"] > threshold:
                     new_cnt = len(debt["new_test_files"])
-                    if not EXTERNAL_ANCHOR_RE.search(msg_text) and not st.get("test_debt_challenged"):
+                    has_anchor = bool(EXTERNAL_ANCHOR_RE.search(msg_text))
+                    was_challenged = bool(st.get("test_debt_challenged"))
+                    if not has_anchor and not was_challenged:
                         st["test_debt_challenged"] = True
                         return _deny_with_streak(
                             st, st_path,
                             f"猫闸出口软拦截（反自证单测 · 测试负债 +{debt['net_lines']} 行）：检测到新建测试文件 {new_cnt} 个 / "
                             f"测试净增 +{debt['net_lines']} 行（{debt['file_summary']}），但交卷消息未写明实现外真值来源。"
                             "请优先删除自证 Mock 测试仅留编译验证，或在 `[done]` 中补写「外部实尺: <来源>」/「存量同步: <理由>」与三档口径后重发。",
+                            role=role, rule="exit_test_debt", tool=tname, nest_root=nest_root,
                         )
+                    _log_gate_event(
+                        "anchor_pass" if has_anchor else "retry_bypass",
+                        role=role, rule="exit_test_debt", tool=tname, nest_root=nest_root,
+                    )
                     st["done_posted"] = True
                     st["tool_count"] = int(st.get("tool_count", 0)) + 1
                     st["denied_streak"] = 0
@@ -1124,6 +1200,8 @@ def _eval_subagent_tool(
                         )
                         return {"action": "overwrite", "overwrite": {"text": msg_text + audit_line}}
                     return {"action": "pass"}
+                if st.get("test_debt_challenged"):
+                    _log_gate_event("debt_cleaned", role=role, rule="exit_test_debt", tool=tname, nest_root=nest_root)
             st["done_posted"] = True
         st["tool_count"] = int(st.get("tool_count", 0)) + 1
         return _allow_reset_streak(st, st_path)
@@ -1131,7 +1209,10 @@ def _eval_subagent_tool(
     if tname == "send_message":
         recip = str(args.get("Recipient") or "")
         if recip == "parent" or (parent_cid and recip == parent_cid):
-            return _deny_with_streak(st, st_path, "子代理完工请直接输出纯文本结束回合，勿向父会话调 send_message。")
+            return _deny_with_streak(
+                st, st_path, "子代理完工请直接输出纯文本结束回合，勿向父会话调 send_message。",
+                role=role, rule="sub_send_message_to_parent", tool=tname, nest_root=nest_root,
+            )
         return _allow_reset_streak(st, st_path)
 
     if tname in ("manage_subagents", "manage_task", "swarm_wait", "read_board"):
@@ -1155,6 +1236,7 @@ def _eval_subagent_tool(
             st, st_path,
             f"猫闸硬水位熔断（{role}: ~{cur_tokens} >= {hard_tokens} tokens）：严禁继续 `read_file` 或执行探索命令！"
             "仅放行向 `open/` 或 `_state/dig/` 写入交接记录，并发送 `[done]` 交卷退役。",
+            role=role, rule="sub_hard_tokens", tool=tname, nest_root=nest_root,
         )
 
     # 4. Role-specific write scope (`tentacle` = `_state/dig/` only)
@@ -1167,6 +1249,7 @@ def _eval_subagent_tool(
             return _deny_with_streak(
                 st, st_path,
                 "猫闸拦截：`tentacle` 窄触手禁止修改业务文件，仅允许向 `_state/dig/` 分批短写（≤120 行）。",
+                role=role, rule="tentacle_write_scope", tool=tname, nest_root=nest_root,
             )
 
     # 5. Role-specific `read_file` binary ban & call/byte quotas (`deputy` & `tentacle`)
@@ -1176,6 +1259,7 @@ def _eval_subagent_tool(
             return _deny_with_streak(
                 st, st_path,
                 f"猫闸拦截：`{role}` 严禁直读 PNG/图片/二进制文件，请扇出 `tentacle` 子代理查看并回传结论。",
+                role=role, rule="sub_binary_read", tool=tname, nest_root=nest_root,
             )
         max_calls = rspec.get("direct_read_max_calls")
         max_total_bytes = rspec.get("direct_read_max_total_bytes")
@@ -1189,11 +1273,13 @@ def _eval_subagent_tool(
             return _deny_with_streak(
                 st, st_path,
                 f"猫闸拦截：`{role}` 直读次数已达上限（{used_calls}/{max_calls} 次），{hint}",
+                role=role, rule="sub_read_calls_quota", tool=tname, nest_root=nest_root,
             )
         if max_total_bytes is not None and (used_bytes + est_b > int(max_total_bytes)):
             return _deny_with_streak(
                 st, st_path,
                 f"猫闸拦截：`{role}` 累计直读字节超上限（{used_bytes + est_b}/{max_total_bytes}B，上限 48KB），请扇出 `tentacle` 查证！",
+                role=role, rule="sub_read_bytes_quota", tool=tname, nest_root=nest_root,
             )
         st["read_calls"] = used_calls + 1
         st["read_bytes"] = used_bytes + est_b
@@ -1239,6 +1325,7 @@ def evaluate_pre_tool(payload: dict) -> dict:
                 prev.setdefault("continuations", {})
                 prev.setdefault("direct_read_files", [])
                 _save_json(main_path, prev)
+                _log_gate_event("assemble_register", role="main", rule="assemble_register", tool=tname, nest_root=nest)
                 return {"action": "pass"}
 
     ctx = resolve_session_context(payload)
@@ -1260,17 +1347,27 @@ def evaluate_pre_tool(payload: dict) -> dict:
         cur_tok = estimate_context_tokens(tpath, int(defs.get("bytes_per_token_fallback", 4)))
         retired = bool(st.get("done_posted")) or (bool(rspec.get("one_shot_done")) and has_posted_done_in_transcript(tpath))
         if retired and (tname in SPAWN_TOOLS or (tname == "swarm" and args.get("action") == "add")):
-            return _deny_with_streak(st, st_path, "猫闸一次性算子熔断：已 `[done]` 退役的 worker 禁止再派生子代理。")
+            return _deny_with_streak(
+                st, st_path, "猫闸一次性算子熔断：已 `[done]` 退役的 worker 禁止再派生子代理。",
+                role=role, rule="sub_one_shot_done", tool=tname, nest_root=nest_root,
+            )
         if hard_tok is not None and cur_tok >= int(hard_tok) and (tname in SPAWN_TOOLS or (tname == "swarm" and args.get("action") == "add")):
-            return _deny_with_streak(st, st_path, f"猫闸硬水位熔断（~{cur_tok} >= {hard_tok} tokens）：超水位禁止继续派生，请写交接并交卷。")
+            return _deny_with_streak(
+                st, st_path, f"猫闸硬水位熔断（~{cur_tok} >= {hard_tok} tokens）：超水位禁止继续派生，请写交接并交卷。",
+                role=role, rule="sub_hard_tokens", tool=tname, nest_root=nest_root,
+            )
 
     spawn_res = _handle_spawn_tool(cid, role, rspec, pol, tname, args, nest_root, st, st_path)
     if spawn_res is not None:
         return spawn_res
 
     if role == "main":
-        return _eval_main_tool(payload, pol, rspec, defs, tname, args, nest_root, cwd, st, st_path)
-    return _eval_subagent_tool(payload, role, rspec, defs, parent_cid, tname, args, nest_root, cwd, st, st_path)
+        res = _eval_main_tool(payload, pol, rspec, defs, tname, args, nest_root, cwd, st, st_path)
+    else:
+        res = _eval_subagent_tool(payload, role, rspec, defs, parent_cid, tname, args, nest_root, cwd, st, st_path)
+    if res.get("action") == "pass":
+        _log_gate_event("pass", role=role, tool=tname, nest_root=nest_root)
+    return res
 
 
 def evaluate_pre_invocation(payload: dict) -> dict:
@@ -1292,6 +1389,13 @@ def evaluate_pre_invocation(payload: dict) -> dict:
         warn_int = int(defs.get("warn_interrupts_total", 2))
         if total_int >= max_int:
             already_reported = _has_interrupt_breaker_after_latest_interrupt(tpath)
+            if not already_reported:
+                _log_gate_event(
+                    "circuit_break",
+                    role=ctx["role"] if ctx else "subagent",
+                    rule="sub_interrupt_breaker",
+                    nest_root=ctx["nest_root"] if ctx else None,
+                )
             return {
                 "inject_system": None,
                 "inject_error": None if already_reported else (
@@ -1323,6 +1427,7 @@ def evaluate_pre_invocation(payload: dict) -> dict:
     if denied >= int(defs.get("max_denials_streak", 5)):
         st["denied_streak"] = 0
         _save_json(st_path, st)
+        _log_gate_event("circuit_break", role=role, rule="denial_streak_breaker", nest_root=ctx["nest_root"])
         return {
             "inject_system": None,
             "inject_error": "猫闸熔断：当前代理连续 5 次撞击越界工具禁令，已终止本轮循环。",

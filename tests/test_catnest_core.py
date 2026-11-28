@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from catnest_lib import load_roles_config, render_roles_markdown, touch_key  # noqa: E402
+from catnest_lib import load_roles_config, load_uses, render_roles_markdown, touch_key  # noqa: E402
 from catnest_lib.recall import recall_items  # noqa: E402
 
 CLI = [sys.executable, str(ROOT / "catnest.py")]
@@ -174,6 +174,111 @@ class TestCatnestCore(unittest.TestCase):
 
         cfg = load_roles_config(ROOT)
         self.assertEqual((ROOT / "templates" / "roles.md").read_text("utf-8"), render_roles_markdown(cfg))
+
+    def test_assemble_keeps_startup_context_within_default_memory_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            nest = Path(td) / "nest"
+            run_cli("init", str(nest))
+            (nest / "boot.md").write_text(
+                "# test\n\n## 猫配方\n- `orange`：`canon/large.md`, `canon/bytes.md`, `canon/short.md`\n",
+                encoding="utf-8",
+            )
+            (nest / "canon" / "large.md").write_text("\n".join(f"大段事实 {i}" for i in range(190)), encoding="utf-8")
+            (nest / "canon" / "bytes.md").write_text("\n".join("x" * 6000 for _ in range(5)), encoding="utf-8")
+            (nest / "canon" / "short.md").write_text("关键索引事实\n", encoding="utf-8")
+
+            r = run_cli("--root", str(nest), "assemble", "orange")
+            self.assertEqual(r.returncode, 0, msg=r.stdout)
+            self.assertLessEqual(len(r.stdout.splitlines()), 200)
+            self.assertLessEqual(len(r.stdout.encode("utf-8")), 25_000)
+            self.assertIn("关键索引事实", r.stdout)
+            self.assertIn("canon/large.md", r.stdout)
+            self.assertIn("canon/bytes.md", r.stdout)
+            self.assertIn("按需读取", r.stdout)
+
+            full = run_cli("--root", str(nest), "assemble", "orange", "--print")
+            self.assertEqual(full.returncode, 0, msg=full.stdout)
+            self.assertIn("大段事实 189", full.stdout)
+            self.assertIn("x" * 6000, full.stdout)
+            self.assertIn("forced full bundle", full.stdout)
+
+    def test_assemble_keeps_failed_probe_warnings_ahead_of_recipe_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            nest = Path(td) / "nest"
+            run_cli("init", str(nest))
+            (nest / "boot.md").write_text(
+                "# test\n\n## 猫配方\n- `orange`：`canon/*.md`\n", encoding="utf-8"
+            )
+            (nest / "_state").mkdir(exist_ok=True)
+            (nest / "_state" / "suspect.md").write_text(
+                "## FAIL\n探针发现必须先处理的失效规则\n", encoding="utf-8"
+            )
+            (nest / "canon" / "large.md").write_text(
+                "### [LARGE] 大型条目\n" + "\n".join(f"长文内容 {i}" for i in range(50)),
+                encoding="utf-8",
+            )
+
+            result = run_cli("--root", str(nest), "assemble", "orange", "--role", "none", "--max-lines", "14")
+            self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+            self.assertIn("必须先处理的失效规则", result.stdout)
+            self.assertIn("canon/large.md", result.stdout)
+            self.assertNotIn("长文内容 49", result.stdout)
+
+    def test_assemble_touches_only_recipe_files_in_loaded_context(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            nest = Path(td) / "nest"
+            run_cli("init", str(nest))
+            (nest / "boot.md").write_text(
+                "# test\n\n## 猫配方\n- `orange`：`canon/*.md`\n", encoding="utf-8"
+            )
+            (nest / "canon" / "large.md").write_text(
+                "### [LARGE] 大型条目\n" + "\n".join(f"长文内容 {i}" for i in range(50)),
+                encoding="utf-8",
+            )
+            (nest / "canon" / "short.md").write_text(
+                "### [SHORT] 短条目\n- **断言**：已读内容。\n", encoding="utf-8"
+            )
+
+            result = run_cli("--root", str(nest), "assemble", "orange", "--role", "none", "--max-lines", "14")
+            self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+            self.assertIn("已读内容", result.stdout)
+            self.assertIn("按需读取", result.stdout)
+
+            uses = load_uses(nest)
+            self.assertIn("SHORT", uses)
+            self.assertNotIn("LARGE", uses)
+
+    def test_note_one_way_inbox_collides_before_append_and_promotes_unclosed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            nest = Path(td) / "nest"
+            run_cli("init", str(nest))
+            (nest / "canon" / "01.md").write_text(
+                "### [RB9] 端口占用河岸\n- **性质**：`[河岸]`\n"
+                "- **断言**：严禁第二个实例抢绑 5701 端口。\n"
+                "- **证据**：`docs/runtime.md#L10`\n- **死亡条件**：端口隔离重写\n",
+                encoding="utf-8",
+            )
+            r = run_cli("--root", str(nest), "note", "我想再起一个实例监听 5701 端口做测试", "--open")
+            self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+            # Must collide against existing RB9 without matching the newly appended inbox line itself
+            coll_block = r.stdout.split("--- [TASK COLLISION:", 1)[1]
+            self.assertIn("RB9", coll_block)
+            self.assertNotIn("inbox-", coll_block)
+
+            inboxes = list((nest / "logs").glob("inbox-*.md"))
+            self.assertEqual(len(inboxes), 1)
+            self.assertIn("5701 端口", inboxes[0].read_text("utf-8"))
+
+            cards = list((nest / "open").glob("idea-*.md"))
+            self.assertEqual(len(cards), 1)
+            card_txt = cards[0].read_text("utf-8")
+            self.assertIn("[未闭合]", card_txt)
+            self.assertIn("RB9", card_txt)
+
+            # Promoted [未闭合] idea card must never auto-sink on purr --days 0 --apply
+            r_purr = run_cli("--root", str(nest), "purr", "--days", "0", "--apply")
+            self.assertEqual(r_purr.returncode, 0, msg=r_purr.stdout)
+            self.assertTrue(cards[0].exists())
 
 
 if __name__ == "__main__":

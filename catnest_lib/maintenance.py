@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import re
 import subprocess
+from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 
 from . import actr_score, engine_root, is_unclosed_tension, load_uses, parse_canon_atoms, state_dir, touch_key
+from .assemble import _format_task_collisions
+from .recall import recall_task_collisions
 from .trace import analyze_transcript, write_trace_report
 
 LAST_TOUCHED_RE = re.compile(r"^last_touched:\s*(\d{4}-\d{2}-\d{2})", re.M)
@@ -65,6 +69,104 @@ def cmd_friction(root: Path, args: argparse.Namespace) -> int:
     if opened_path:
         print(f"promoted to open -> {opened_path}")
     return 0
+
+
+def cmd_note(root: Path, args: argparse.Namespace) -> int:
+    """One-way idea/constraint inbox: collide against existing nest first, then append without hijacking channel."""
+    root_resolved = root.resolve()
+    now = datetime.now()
+    text = args.text.strip()
+    top = getattr(args, "top", 5)
+
+    # Collide BEFORE writing so the newly appended line does not match itself
+    hits = recall_task_collisions(root_resolved, text, top=top) if top > 0 else []
+
+    logs_dir = root_resolved / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    inbox_file = logs_dir / f"inbox-{now.strftime('%Y-%m')}.md"
+    if not inbox_file.exists():
+        inbox_file.write_text(f"# {now.strftime('%Y-%m')} · 单向想法与约束收集板\n\n", encoding="utf-8")
+
+    ctx_part = f" | ctx: {args.context}" if getattr(args, "context", None) else ""
+    entry = f"- `{now.strftime('%Y-%m-%d %H:%M')}` {text}{ctx_part}\n"
+    with inbox_file.open("a", encoding="utf-8") as f:
+        f.write(entry)
+
+    opened_path: Path | None = None
+    if getattr(args, "open", False):
+        slug = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "-", text).strip("-")[:24] or "idea"
+        opened_path = root_resolved / "open" / f"idea-{now.strftime('%m%d')}-{slug}.md"
+        opened_path.parent.mkdir(parents=True, exist_ok=True)
+        coll_ids = ", ".join(h["id"] for h in hits if h.get("kind") == "canon")
+        coll_lines = "\n".join(
+            f"- `[{h.get('nature') or h['kind']}]` {h['id']} — {h['title']} (`{h['path']}`)"
+            for h in hits
+        ) or "- （暂无词面命中）"
+        opened_path.write_text(
+            f"---\nid: I-{now.strftime('%m%d%H%M')}\ntitle: \"[未闭合] {text}\"\nstatus: active\n"
+            f"last_touched: {now.strftime('%Y-%m-%d')}\ncollisions: [{coll_ids}]\n---\n\n"
+            f"# [未闭合] 想法待整理：{text}\n\n"
+            f"- 来源：`{inbox_file.relative_to(root_resolved)}`\n"
+            f"- 现场上下文：{getattr(args, 'context', None) or '（单向收集，待整理裁决）'}\n\n"
+            f"## 录入时自动碰撞到的既有约束/悬案\n{coll_lines}\n",
+            encoding="utf-8",
+        )
+        touch_key(root_resolved, f"open/{opened_path.stem}")
+
+    print(f"captured idea -> {inbox_file}")
+    if opened_path:
+        print(f"promoted unclosed card -> {opened_path}")
+    if top > 0:
+        print(_format_task_collisions(text, hits).lstrip("\n"))
+    return 0
+
+
+def gate_event_stats(root: Path) -> dict:
+    """Aggregate privacy-safe gate rule counts & denominators from CATNEST_GATE_DIR/events.jsonl."""
+    gate_dir = Path(os.environ.get("CATNEST_GATE_DIR") or (Path.home() / ".cache" / "catnest" / "gate"))
+    ev_file = gate_dir / "events.jsonl"
+    root_str = str(root.resolve())
+    is_engine = root.resolve() == engine_root()
+    events: Counter[str] = Counter()
+    deny_rules: Counter[str] = Counter()
+    bypass_rules: Counter[str] = Counter()
+    break_rules: Counter[str] = Counter()
+    if ev_file.is_file():
+        for ln in ev_file.read_text("utf-8", errors="replace").splitlines():
+            if not ln.strip():
+                continue
+            try:
+                rec = json.loads(ln)
+            except ValueError:
+                continue
+            nest = str(rec.get("nest") or "")
+            if not is_engine and nest and nest != root_str:
+                continue
+            ev = str(rec.get("event") or "")
+            rule = str(rec.get("rule") or "unspecified")
+            events[ev] += 1
+            if ev == "deny":
+                deny_rules[rule] += 1
+            elif ev in ("retry_bypass", "anchor_pass", "debt_cleaned"):
+                bypass_rules[f"{rule}:{ev}"] += 1
+            elif ev == "circuit_break":
+                break_rules[rule] += 1
+    calls = (
+        events["pass"]
+        + events["spawn_stamp"]
+        + events["deny"]
+        + events["retry_bypass"]
+        + events["anchor_pass"]
+    )
+    return {
+        "source": str(ev_file),
+        "scope": "global" if is_engine else "nest",
+        "calls": calls,
+        "events": events,
+        "deny_rules": deny_rules,
+        "bypass_rules": bypass_rules,
+        "break_rules": break_rules,
+    }
 
 
 def _open_age_days(path: Path, today: date) -> int:
@@ -181,10 +283,29 @@ def cmd_settle(root: Path, args: argparse.Namespace) -> int:
         if staged:
             print(f"  - 跨项目暂存摩擦（`_state/meta-inbox.md`）：{len(staged)} 条待显式 `retro` 脱敏提炼")
 
-    # 3. Low-noise git revert signals + optional transcript pointer extraction (for `retro`)
+    # 3. Objective gate telemetry denominators (rule hits, bypasses, circuit breakers)
+    gs = gate_event_stats(root)
+    ev = gs["events"]
+    deny_rate = f"{(ev['deny'] / gs['calls'] * 100):.1f}%" if gs["calls"] else "N/A"
+    print(
+        f"\n## 3. 猫闸客观分母（scope={gs['scope']} | 受管调用 {gs['calls']} 次："
+        f"放行 {ev['pass']} / 注卡 {ev['spawn_stamp']} / 拦截 {ev['deny']} [{deny_rate}] / "
+        f"软拦后续(绕行={ev['retry_bypass']}, 带锚={ev['anchor_pass']}, 删测={ev['debt_cleaned']}) / "
+        f"熔断 {ev['circuit_break']} / 解闸 {ev['escape_phrase']}）"
+    )
+    for rname, cnt in gs["deny_rules"].most_common(8):
+        print(f"  - 拦截规则 `{rname}`: {cnt} 次")
+    for bname, cnt in gs["bypass_rules"].most_common(5):
+        print(f"  - 软拦分流 `{bname}`: {cnt} 次")
+    for cname, cnt in gs["break_rules"].most_common(5):
+        print(f"  - 物理熔断 `{cname}`: {cnt} 次")
+    if not gs["calls"] and not ev["assemble_register"]:
+        print("  - 暂无已记录的猫闸事件（运行后自动写入 CATNEST_GATE_DIR/events.jsonl）")
+
+    # 4. Low-noise git revert signals + optional transcript pointer extraction (for `retro`)
     repo = Path(getattr(args, "repo", None) or root).expanduser().resolve()
     reverts = git_revert_signals(repo)
-    print(f"\n## 3. 回退与会话指针信号（供显式 `retro` 复盘，禁自动自改 | repo={repo.name}）")
+    print(f"\n## 4. 回退与会话指针信号（供显式 `retro` 复盘，禁自动自改 | repo={repo.name}）")
     for rev in reverts:
         print(f"  - 回退记录：{rev}")
     if not reverts:
@@ -203,7 +324,7 @@ def cmd_settle(root: Path, args: argparse.Namespace) -> int:
                 f"错误={len(sig['errors'])}, 纠偏词={len(sig['corrections'])})"
             )
 
-    # 4. Weighted blind-check sample (atoms without executable probes & lowest ACT-R first)
+    # 5. Weighted blind-check sample (atoms without executable probes & lowest ACT-R first)
     atoms = [a for a in parse_canon_atoms(root) if a.get("nature") != "意图"]
     rng = random.Random(args.seed)
     pool = sorted(
@@ -215,7 +336,7 @@ def cmd_settle(root: Path, args: argparse.Namespace) -> int:
     )
     front = pool[: min(max(args.sample * 2, 1), len(pool))]
     picked = rng.sample(front, min(args.sample, len(front))) if front else []
-    print(f"\n## 4. 随机盲抽复核清单（优先无机器探针/久未碰，抽 {len(picked)} 条）")
+    print(f"\n## 5. 随机盲抽复核清单（优先无机器探针/久未碰，抽 {len(picked)} 条）")
     for a in picked:
         print(f"  - [{a['id']}] ({a.get('nature') or '?'}) {a['title']} ({a['path']})")
     return 0

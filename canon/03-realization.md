@@ -14,9 +14,9 @@
 - **死亡条件**：探针代码因重写成本过高而被持续直接合入主线。
 - **别名**：探针代码, 河床代码, 置信度分层, 可塑层次, 隔离worktree
 
-### [R3] 单一真源角色配额、自动注卡与 Fail-Closed 水位熔断
+### [R3] 会话装配与角色契约：单一真源、自动注卡与 Fail-Closed 水位熔断
 - **性质**：`[裁决]`
-- **断言**：角色配额与契约仅在单一真源 `roles.json` 定案（文档与技能文件不重复抄写具体数字），同源驱动 `templates/roles.md` 与 `hooks/catnest_gate.py`。Antigravity 派单时由猫闸随角色戳记自动把对应精简角色卡注入子代理上下文（无 hook 宿主走 `assemble --role` 或派单正文带入），并按能力类执行 Fail-Closed 读配额、派出即停、水位/断流熔断与一次性算子退役。
-- **来由**：`logs/2026-11-20-genesis.md#L13-16`, `logs/friction-2026-11.md#L10`, `logs/friction-2026-11.md#L12`, `open/01-process-fold-bridge.md`
-- **死亡条件**：猫闸拦截或角色卡自动注入在实测中造成正常短任务损耗高于其阻止的爆窗/断流/契约失传事故时。
+- **断言**：项目已配置猫窝配方时，主会话先按入口执行 `assemble`，把项目共享状态和角色卡带入当前上下文。角色配额与行动契约只在单一真源 `roles.json` 定案（文档与技能文件不重复抄具体数字），同源驱动 `templates/roles.md` 与 `hooks/catnest_gate.py`。Antigravity 派单时由猫闸随角色戳记自动把对应角色卡注入子代理上下文（无 hook 宿主走 `assemble --role` 或派单正文带入），并按能力类执行 Fail-Closed 读配额、派出即停、水位/断流熔断与一次性算子退役。
+- **来由**：`logs/2026-11-20-genesis.md#L13-16`, `logs/friction-2026-11.md#L10`, `logs/friction-2026-11.md#L12`, `logs/friction-2026-11.md#L15`, Anthropic 的 [Agent Memory 分层实验](https://www.anthropic.com/research/components-of-agent-memory), `open/01-process-fold-bridge.md`
+- **死亡条件**：入口装配或猫闸注入在实测中造成正常短任务损耗高于其阻止的重复探索、爆窗、断流或契约失传事故时。
 - **别名**：上下文噪音, 过程折叠, 副手, 窄触手, 三档分流, 断流死循环, 禁读图片, 水位熔断, 角色卡注入, 单一真源

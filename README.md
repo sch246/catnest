@@ -2,11 +2,19 @@
 
 面向**想法与约束持续涌入、无预设评判标准、跨多会话/多仓库长程演化**项目的可执行研发手册。纯本地 Markdown + Git + Python 3 标准库（零数据库、零向量库、零常驻服务、模型与 IDE 无关），仓库自身即用自己维护自己的 **Project #0**。
 
-> 跨工具方法论与判断心法（先攒河岸、三轴反本能、决策空间守恒）归属 `rising-sea`；本手册只管可执行机制、目录契约、CLI、角色派单与探针。
+> 跨工具判断心法归属 `rising-sea`；本手册只管可执行机制、目录契约、CLI、角色派单与探针。
 
 ## 为什么做 `catnest`？
 
-真实复杂工程里，想法和纠偏是一段段冒出来的：直接让 AI 写主线代码最快烂成补丁泥潭；先冻结成静态 Spec + Ticket 又会在持续变化中雪崩失效；而 95% 的上下文死于翻阅原始源码与长日志的 I/O 噪音。
+`catnest` 有两个彼此关联、但不能混成一个的问题来源。
+
+第一，用户的想法、修正和现实约束持续涌入，而 AI 也在同一段对话里执行任务并输出结果。两股流交织，会占满沟通信道；新想法还可能和旧意图、既有约束冲突，而用户当下未必能察觉。需要把输入先单向收进一个可回查、可整理、可与旧信息碰撞的共享板，让新输入的收纳不必立刻争用当前任务的输出；再决定哪些进入当前工作、哪些仍待现实或用户裁决。
+
+第二，复杂工程超出单一会话能承载的范围。只靠一个上下文通读源码、长日志并同时统筹实现，会被原始 I/O 噪音耗尽。多个局部上下文可以各自接触一片现实，再由共享结构和协调者整合，突破单会话的认知窗口。
+
+直接照想法写主线代码，容易积累成补丁；把需求先冻结成静态 Spec + Ticket，又会在持续纠偏中失效。初始实测还显示，原始源码和长日志的 I/O 会占去绝大部分上下文。`catnest` 因而同时承担输入整理和多上下文协作。
+
+当前实现通过 `note`（别名 `inbox`）把涌入的想法或约束单向落入 `logs/inbox-YYYY-MM.md`（可选 `--open` 立 `[未闭合]` 卡），并在落盘前当场用 `recall` 碰撞既有 `[河岸]`、`[未闭合]` 与外部证据，避免打断当前任务输出；`logs/`、`open/`、`canon/` 与 `assemble --task` 分别负责留痕、保留未决、沉淀结论与开机装配。召回依据词项相关度给出碰撞线索，不会自行代替人或协调者裁定逻辑冲突。
 
 | 常见方案的死角 | `catnest` 的做法 |
 |---|---|
@@ -63,7 +71,7 @@ python3 ./catnest.py --root /path/to/my-nest check --install-hook /path/to/code-
   - **别名**：口语同义词1, 同义词2
   ```
 - **`open/*.md`**：活跃悬案与切片交接。标题或正文含 `[未闭合]`、`[UNCLOSED]` 或 `张力:` 的未决张力受永久保护，**`purr` 严禁按 14 天未碰将其列入沉水候选**。
-- **写入准则**：写 canon 必带来由与可观察死法；能物化成代码/探针即撤出条文。
+- **写入准则**：写 canon 必带来由与可观察死法；每条持久结论只有一个权威位置，并标明适用范围；能物化成代码/探针即撤出条文。
 - **`roles.json` & `hooks/catnest_gate.py`**：角色能力与配额的**唯一真源**（文档不复写具体数字，精确阈值见 [roles.json](roles.json) 与自动生成的 [templates/roles.md](templates/roles.md)）。
   - **派单与注卡**：缺一手锚点先派 `tentacle` 查窄问题落 `_state/dig/`，锚点明确则直派 `worker`；Antigravity 宿主由 `hooks/catnest_gate.py` 在 `invoke_subagent` / `swarm add` 时随服务端 `nonce` 戳记**自动注入对应角色卡**（Codex 等无 hook 宿主用 `assemble --role` 显式带入）。
   - **证伪退单**：一手源码或运行证据推翻派单前提时，`worker`/`deputy` 停止受影响切片并带 `[UNCLOSED]` 与 `file:line` 回传，由主控决定是否更新 `open/`（`canon/`、`open/` 保持主控单写）。
@@ -76,12 +84,13 @@ python3 ./catnest.py --root /path/to/my-nest check --install-hook /path/to/code-
 |---|---|
 | `init [dir] [--name N]` | 初始化新猫窝目录与默认 `boot.md` |
 | `status` | 查看原子、探针、悬案、日志数量与 `suspect.md` 状态 |
-| `assemble [猫名] [--role main\|deputy\|worker\|tentacle] [--task "<议题>"] [--files-only\|--print\|--json]` | 按配方直出角色卡与上下文；传入 `--task` 时自动追加 `[河岸]`/`[未闭合]`/外部证据 Top-5 碰撞结果 |
+| `assemble [猫名] [--role main\|deputy\|worker\|tentacle] [--task "<议题>"] [--files-only\|--print\|--json]` | 按配方直出角色卡与上下文；默认最多 200 行或 25 KB，超出的整份文件列为按需读取；传入 `--task` 时自动追加 `[河岸]`/`[未闭合]`/外部证据 Top-5 碰撞结果 ([记忆分层依据](https://www.anthropic.com/research/components-of-agent-memory)) |
 | `recall "<查询>" [--top 6] [--no-logs]` | 中文二元组 BM25 + 别名 3× + 原地外部证据扫描（`[河岸]` 与外部证据源免受 ACT-R 时间衰减压制） |
 | `touch <ID或open/名>` | 显式标记采纳并刷新 ACT-R 活跃度（同时更新 `open/` 的 `last_touched`） |
 | `check [--all\|--mutate\|--diff REF] [--repo PATH] [--install-hook REPO]` | 分栏输出 `HYGIENE: m/m \| ANCHORED: k/k` 并刷新 `_state/suspect.md`；`--mutate` 防假穿透 |
+| `note` / `inbox "<想法或约束>" [--open] [--context CTX] [--top 5]` | 单向收集新想法入 `logs/inbox-YYYY-MM.md`（不挂重门禁），落盘前自动碰撞既有 `[河岸]`/`[未闭合]`/外部证据；`--open` 同步建 `[未闭合]` 保护卡 |
 | `friction "<现象>" [--kind miss\|false-alarm\|bloat\|drift\|other] [--atom ID] [--open] [--meta]` | 记录运行摩擦；`--open` 升格进 `open/`；跨项目 `--meta` 暂存至 `$CATNEST_HOME/_state/meta-inbox.md` |
-| `purr` / `settle [--days 14] [--repo PATH] [--transcript JSONL] [--apply]` | 沉水已闭环超期 `open/`（豁免 `[未闭合]`/`张力:`），提取回退与会话结构指针供人工授权 `retro` |
+| `purr` / `settle [--days 14] [--repo PATH] [--transcript JSONL] [--apply]` | 沉水已闭环超期 `open/`（豁免 `[未闭合]`/`张力:`），汇总猫闸规则级客观触发/绕行分母，提取回退与会话结构指针供人工授权 `retro` |
 
 ## License
 

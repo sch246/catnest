@@ -9,7 +9,7 @@ from pathlib import Path
 from catnest_lib import parse_canon_atoms
 from catnest_lib.assemble import cmd_assemble
 from catnest_lib.check import cmd_check
-from catnest_lib.maintenance import cmd_friction, cmd_settle
+from catnest_lib.maintenance import cmd_friction, cmd_note, cmd_settle
 from catnest_lib.recall import cmd_recall, cmd_touch
 
 DIRS = ("canon", "probes", "open", "logs", "_state")
@@ -101,8 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--task", help="Auto-run recall collision against riverbanks, unclosed tensions & external evidence")
     s.add_argument("--list", action="store_true")
     s.add_argument("--files-only", action="store_true", help="Only list resolved file paths without printing contents")
-    s.add_argument("--print", dest="print_bundle", action="store_true", help="Force full bundle output even above --max-lines")
-    s.add_argument("--max-lines", type=int, default=450)
+    s.add_argument("--print", dest="print_bundle", action="store_true", help="Force full bundle output above the startup budget")
+    s.add_argument("--max-lines", type=int, default=200, help="Startup context line budget (default: 200)")
+    s.add_argument("--max-bytes", type=int, default=25_000, help="Startup context UTF-8 byte budget (default: 25000)")
     s.add_argument("--no-touch", action="store_true")
     s.add_argument("--json", action="store_true")
     s.set_defaults(handler=cmd_assemble)
@@ -114,6 +115,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--repo", help="Target code repository path")
     s.add_argument("--install-hook", help="Install non-blocking post-commit hook in target git repo")
     s.set_defaults(handler=cmd_check)
+
+    s = sub.add_parser("note", aliases=["inbox"], help="One-way idea/constraint inbox with immediate riverbank collision")
+    s.add_argument("text")
+    s.add_argument("--context", help="Optional context pointer")
+    s.add_argument("--open", action="store_true", help="Also promote into open/ as an [未闭合] card")
+    s.add_argument("--top", type=int, default=5, help="Collision hits to show (0 to skip)")
+    s.set_defaults(handler=cmd_note)
 
     s = sub.add_parser("friction", help="Record runtime friction back into logs (and optionally open/)")
     s.add_argument("summary")
